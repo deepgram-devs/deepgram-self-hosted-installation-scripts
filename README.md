@@ -31,8 +31,7 @@ Primary script: `deepgram-aws-docker-setup.sh`
 ## Repository Contents
 
 - `deepgram-aws-docker-setup.sh` - main interactive AWS Docker/Podman setup script
-- `deepgram-eks-setup.sh` - separate EKS-focused setup script (kept as-is)
-- `artifacts/` - generated artifacts from previous runs (if present)
+- `deepgram-eks-setup.sh` - WIP
 
 ## Requirements
 
@@ -46,7 +45,7 @@ Primary script: `deepgram-aws-docker-setup.sh`
 - Deepgram credentials:
   - Quay credentials with access to required self-hosted images
   - Deepgram self-hosted API key
-  - Model `.dg` URLs
+  - Model `.dg` URLs or a txt file containing model links
 
 ## Usage
 
@@ -72,7 +71,7 @@ Choose:
 
 - Model URL input accepts:
   - Path to a local file (one URL per line), or
-  - Direct comma-separated URLs
+  - Direct comma-separated S3 URLs
 - Defaults are shown as `Default: ...`
 - Auto-discovered values are shown as `Auto-detected: ...`
 
@@ -130,14 +129,6 @@ Checks:
 - Ensure Aura-2 UUID env vars are present under `services.engine.environment`
 - Ensure selected Aura-2 model files match variant (`en`, `es`, or `polyglot`)
 
-### API 401 responses
-
-Symptom:
-- API requests return `401 Unauthorized`
-
-Fix:
-- Include `Authorization: Token $DEEPGRAM_API_KEY` in manual requests
-- Ensure `.env` and/or `~/.deepgram-self-hosted.env` contains valid key
 
 ### License proxy connection refused
 
@@ -152,12 +143,11 @@ Checks:
 Useful commands:
 ```bash
 sudo docker compose -f /home/ubuntu/deepgram-self-hosted/config/compose.yml ps
-sudo docker logs --tail 200 config_api_1
-sudo docker logs --tail 200 config_engine_1
-sudo docker logs --tail 200 config_license-proxy_1
+sudo docker logs --tail 200 config-api-1
+sudo docker logs --tail 200 config-engin-1
+sudo docker logs --tail 200 config-license-proxy-1
 ```
 
 ## Notes
 
-- `g6.2xlarge` has 1 GPU (NVIDIA L4). Use `CUDA_VISIBLE_DEVICES="0"`.
 - Script automation is tuned for Ubuntu; other distros may require manual package/runtime adjustments.
