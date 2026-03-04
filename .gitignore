@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Generated/test artifacts
+artifacts/
+test-leah/
+
+# Local env/secrets
+*.pem
+*.key
+*.env
+.env
+
+# Shell temp/backup
+*.bak
