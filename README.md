@@ -181,7 +181,7 @@ The Kubernetes wizard always writes artifacts to `kubernetes/aws/artifacts/` (re
 
 The Docker path writes its compose/TOML output into `$HOME/deepgram-self-hosted/` on the target host.
 
-`artifacts/` and ad-hoc test output under `test-leah/` are gitignored, along with local env/secret files.
+`artifacts/` and ad-hoc test output are gitignored, along with local env/secret files.
 
 ## Adding Providers
 
