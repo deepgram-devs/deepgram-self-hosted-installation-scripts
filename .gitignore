@@ -4,6 +4,10 @@
 # Generated/test artifacts
 artifacts/
 test-leah/
+.ruff_cache/
+.venv/
+__pycache__/
+*.pyc
 
 # Local env/secrets
 *.pem

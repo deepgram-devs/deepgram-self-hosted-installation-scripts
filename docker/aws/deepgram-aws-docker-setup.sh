@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_VERSION="0.2.0"
+SCRIPT_VERSION="0.2.1"
 BASE_URL="https://raw.githubusercontent.com/deepgram/self-hosted-resources/refs/heads/main"
 SKIP_EC2_PROVISION="false"
 
@@ -215,6 +215,10 @@ is_http_url() {
 
 nvidia_ready() {
   command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1
+}
+
+is_macos() {
+  [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]
 }
 
 trim_whitespace() {
@@ -496,6 +500,132 @@ resolve_default_ubuntu_ami() {
   return 1
 }
 
+select_existing_key_pair() {
+  local var_name="$1"
+  local region="$2"
+  local key_names=()
+  local line choice
+
+  while IFS= read -r line; do
+    [[ -n "$line" && "$line" != "None" ]] && key_names+=("$line")
+  done < <(aws ec2 describe-key-pairs \
+    --region "$region" \
+    --query 'sort_by(KeyPairs,&KeyName)[].KeyName' \
+    --output text | tr '\t' '\n')
+
+  if (( ${#key_names[@]} == 0 )); then
+    die "No EC2 key pairs found in $region. Create a key pair in AWS or choose to create a new key pair."
+  fi
+
+  prompt_choice choice "Select EC2 key pair in $region" "${key_names[@]}"
+  printf -v "$var_name" "%s" "$choice"
+}
+
+find_security_group_by_name() {
+  local var_name="$1"
+  local region="$2"
+  local vpc_id="$3"
+  local sg_name="$4"
+  local sg_id
+
+  sg_id="$(aws ec2 describe-security-groups \
+    --region "$region" \
+    --filters "Name=vpc-id,Values=$vpc_id" "Name=group-name,Values=$sg_name" \
+    --query 'SecurityGroups[0].GroupId' \
+    --output text 2>/dev/null || true)"
+
+  if [[ -n "$sg_id" && "$sg_id" != "None" ]]; then
+    printf -v "$var_name" "%s" "$sg_id"
+  else
+    printf -v "$var_name" "%s" ""
+  fi
+}
+
+select_existing_security_group() {
+  local var_name="$1"
+  local region="$2"
+  local vpc_id="$3"
+  local labels=()
+  local ids=()
+  local group_id group_name choice index
+
+  while IFS=$'\t' read -r group_id group_name; do
+    [[ -z "${group_id:-}" || "$group_id" == "None" ]] && continue
+    ids+=("$group_id")
+    labels+=("$group_id (${group_name:-unnamed})")
+  done < <(aws ec2 describe-security-groups \
+    --region "$region" \
+    --filters "Name=vpc-id,Values=$vpc_id" \
+    --query 'sort_by(SecurityGroups,&GroupName)[].[GroupId,GroupName]' \
+    --output text)
+
+  if (( ${#ids[@]} == 0 )); then
+    die "No security groups found in VPC $vpc_id."
+  fi
+
+  prompt_choice choice "Select security group in VPC $vpc_id" "${labels[@]}"
+  for index in "${!labels[@]}"; do
+    if [[ "${labels[$index]}" == "$choice" ]]; then
+      printf -v "$var_name" "%s" "${ids[$index]}"
+      return 0
+    fi
+  done
+
+  die "Could not resolve selected security group."
+}
+
+create_or_select_security_group() {
+  local var_name="$1"
+  local region="$2"
+  local vpc_id="$3"
+  local sg_name existing_sg_id duplicate_action ssh_cidr
+
+  while true; do
+    prompt sg_name "Security group name" "deepgram-self-hosted-sg"
+    find_security_group_by_name existing_sg_id "$region" "$vpc_id" "$sg_name"
+
+    if [[ -n "$existing_sg_id" ]]; then
+      say "Security group '$sg_name' already exists in VPC $vpc_id: $existing_sg_id"
+      prompt_choice duplicate_action "How should the existing security group be handled?" \
+        "Use existing security group" \
+        "Enter a different security group name" \
+        "Select a different existing security group"
+
+      case "$duplicate_action" in
+        "Use existing security group")
+          printf -v "$var_name" "%s" "$existing_sg_id"
+          return 0
+          ;;
+        "Enter a different security group name")
+          continue
+          ;;
+        "Select a different existing security group")
+          select_existing_security_group "$var_name" "$region" "$vpc_id"
+          return 0
+          ;;
+      esac
+    fi
+
+    local created_sg_id
+    created_sg_id="$(aws ec2 create-security-group \
+      --group-name "$sg_name" \
+      --description "Deepgram self-hosted access" \
+      --vpc-id "$vpc_id" \
+      --region "$region" \
+      --query GroupId \
+      --output text)"
+
+    prompt ssh_cidr "SSH ingress CIDR" "0.0.0.0/0"
+    aws ec2 authorize-security-group-ingress --group-id "$created_sg_id" --protocol tcp --port 22 --cidr "$ssh_cidr" --region "$region" || true
+    if confirm "Open HTTPS (443) to the internet?" "n"; then
+      aws ec2 authorize-security-group-ingress --group-id "$created_sg_id" --protocol tcp --port 443 --cidr 0.0.0.0/0 --region "$region" || true
+    fi
+
+    printf -v "$var_name" "%s" "$created_sg_id"
+    return 0
+  done
+}
+
 provision_ec2_instance() {
   require_cmd aws
   require_cmd ssh
@@ -510,7 +640,7 @@ provision_ec2_instance() {
   prompt_choice key_mode "EC2 key pair" "Use existing key pair" "Create new key pair"
 
   if [[ "$key_mode" == "Use existing key pair" ]]; then
-    prompt_required key_name "Existing key pair name"
+    select_existing_key_pair key_name "$region"
     prompt_required key_path "Local path to PEM private key"
     [[ -f "$key_path" ]] || die "PEM file not found: $key_path"
   else
@@ -521,20 +651,16 @@ provision_ec2_instance() {
     say "Created key pair and wrote $key_path"
   fi
 
-  local sg_mode sg_id vpc_id sg_name ssh_cidr
+  local sg_mode sg_id vpc_id
   prompt_choice sg_mode "Security group" "Use existing security group" "Create new security group"
   if [[ "$sg_mode" == "Use existing security group" ]]; then
-    prompt_required sg_id "Existing security group ID (sg-...)"
+    vpc_id="$(aws ec2 describe-vpcs --region "$region" --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)"
+    prompt vpc_id "VPC ID" "$vpc_id" "Auto-detected"
+    select_existing_security_group sg_id "$region" "$vpc_id"
   else
     vpc_id="$(aws ec2 describe-vpcs --region "$region" --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)"
     prompt vpc_id "VPC ID" "$vpc_id" "Auto-detected"
-    prompt sg_name "Security group name" "deepgram-self-hosted-sg"
-    sg_id="$(aws ec2 create-security-group --group-name "$sg_name" --description "Deepgram self-hosted access" --vpc-id "$vpc_id" --region "$region" --query GroupId --output text)"
-    prompt ssh_cidr "SSH ingress CIDR" "0.0.0.0/0"
-    aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 22 --cidr "$ssh_cidr" --region "$region" || true
-    if confirm "Open HTTPS (443) to the internet?" "n"; then
-      aws ec2 authorize-security-group-ingress --group-id "$sg_id" --protocol tcp --port 443 --cidr 0.0.0.0/0 --region "$region" || true
-    fi
+    create_or_select_security_group sg_id "$region" "$vpc_id"
   fi
 
   local ami_default ami_id instance_type disk_size instance_name
@@ -564,6 +690,8 @@ provision_ec2_instance() {
   say "Launched EC2 instance: $instance_id"
   say "Waiting for instance to enter running state..."
   aws ec2 wait instance-running --region "$region" --instance-ids "$instance_id"
+  say "Waiting for instance status checks to pass..."
+  aws ec2 wait instance-status-ok --region "$region" --instance-ids "$instance_id"
 
   local public_dns public_ip
   public_dns="$(aws ec2 describe-instances --region "$region" --instance-ids "$instance_id" --query 'Reservations[0].Instances[0].PublicDnsName' --output text)"
@@ -571,6 +699,19 @@ provision_ec2_instance() {
 
   local ssh_user
   prompt ssh_user "SSH user" "ubuntu"
+
+  say "Waiting for SSH to accept connections on $public_dns..."
+  local ssh_attempt
+  for ssh_attempt in {1..30}; do
+    if ssh -i "$key_path" \
+        -o StrictHostKeyChecking=accept-new \
+        -o ConnectTimeout=5 \
+        -o BatchMode=yes \
+        "$ssh_user@$public_dns" true >/dev/null 2>&1; then
+      break
+    fi
+    sleep 5
+  done
 
   say ""
   say "EC2 is ready."
@@ -580,14 +721,14 @@ provision_ec2_instance() {
   say "SSH command: ssh -i $key_path $ssh_user@$public_dns"
 
   if confirm "Copy this script to the instance and start setup over SSH now?" "y"; then
-    local remote_script="~/deepgram-aws-docker-setup.sh"
+    local remote_script="deepgram-aws-docker-setup.sh"
     scp -i "$key_path" -o StrictHostKeyChecking=accept-new "$0" "$ssh_user@$public_dns:$remote_script"
     ssh -i "$key_path" -o StrictHostKeyChecking=accept-new "$ssh_user@$public_dns" \
-      "chmod +x $remote_script && $remote_script --skip-ec2-provision"
+      "chmod +x \"\$HOME/$remote_script\" && \"\$HOME/$remote_script\" --skip-ec2-provision"
   else
     say "Run this next:"
-    say "scp -i $key_path $0 $ssh_user@$public_dns:~/deepgram-aws-docker-setup.sh"
-    say "ssh -i $key_path $ssh_user@$public_dns 'chmod +x ~/deepgram-aws-docker-setup.sh && ~/deepgram-aws-docker-setup.sh --skip-ec2-provision'"
+    say "scp -i $key_path $0 $ssh_user@$public_dns:deepgram-aws-docker-setup.sh"
+    say "ssh -i $key_path $ssh_user@$public_dns 'chmod +x \$HOME/deepgram-aws-docker-setup.sh && \$HOME/deepgram-aws-docker-setup.sh --skip-ec2-provision'"
   fi
 }
 
@@ -600,7 +741,17 @@ main() {
   require_cmd basename
   require_cmd dirname
 
+  if [[ "$SKIP_EC2_PROVISION" == "true" ]] && is_macos; then
+    die "Host setup cannot run on macOS. Run without --skip-ec2-provision to provision an Ubuntu EC2 instance, then continue on EC2."
+  fi
+
   if [[ "$SKIP_EC2_PROVISION" != "true" ]]; then
+    if is_macos; then
+      say "Detected macOS. Skipping EC2-host setup mode; provisioning an Ubuntu EC2 instance first."
+      provision_ec2_instance
+      return 0
+    fi
+
     local run_mode
     prompt_choice run_mode "Where are you running this script?" "On an EC2 host" "On my local machine (provision EC2 first)"
     if [[ "$run_mode" == "On my local machine (provision EC2 first)" ]]; then
