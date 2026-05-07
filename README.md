@@ -1,163 +1,201 @@
-# Deepgram AWS Self-Hosted Setup Script
+# Deepgram Self-Hosted Setup Scripts
 
-Interactive setup for running Deepgram self-hosted services on AWS EC2 using Docker/Podman.
+Setup tooling for running Deepgram self-hosted services across deployment targets and cloud providers. The Kubernetes path is driven by an interactive Python wizard (`uv run dg-self-hosted setup kubernetes aws`); the Docker path uses an interactive shell script.
 
-Primary script: `deepgram-aws-docker-setup.sh`
+## Layout
 
-## What This Script Does
-
-- Optional EC2 provisioning from local machine:
-  - Create or use existing key pair
-  - Create or use existing security group
-  - Launch instance with auto-detected Ubuntu AMI
-  - Copy script to EC2 and continue remotely
-- Host bootstrap on Ubuntu EC2:
-  - Installs Docker or Podman (interactive choice)
-  - Prefers Docker Compose v2 (`docker compose`)
-  - Installs NVIDIA drivers + NVIDIA container toolkit (optional)
-  - Detects when reboot is required for GPU driver activation
-- Deepgram deployment setup:
-  - Supports `standard` and `license-proxy` deployment types
-  - Supports model profiles: `nova-3`, `flux`, `aura-2`
-  - Aura-2 variants: `en`, `es`, `polyglot`
-  - Uses Aura-2 specific compose/TOML templates when selected
-  - For Flux, enables required TOML flags automatically
-  - Downloads `.dg` model files from comma-separated URLs or URL-file input
-  - Writes config files and starts containers
-- Optional API key persistence:
-  - Saves `DEEPGRAM_API_KEY` to `~/.deepgram-self-hosted.env`
-  - Adds source lines to shell startup files
-
-## Repository Contents
-
-- `deepgram-aws-docker-setup.sh` - main interactive AWS Docker/Podman setup script
-- `deepgram-eks-setup.sh` - separate EKS-focused setup script (kept as-is)
-- `artifacts/` - generated artifacts from previous runs (if present)
-
-## Requirements
-
-- For local provisioning mode:
-  - AWS CLI configured (`aws sts get-caller-identity` works)
-  - SSH + SCP installed
-- For EC2 host mode:
-  - Ubuntu recommended (automation is Ubuntu-focused)
-  - `sudo` privileges
-  - Internet egress to pull packages/images/models
-- Deepgram credentials:
-  - Quay credentials with access to required self-hosted images
-  - Deepgram self-hosted API key
-  - Model `.dg` URLs
-
-## Usage
-
-### 1) Run directly on an EC2 host
-
-```bash
-chmod +x ./deepgram-aws-docker-setup.sh
-./deepgram-aws-docker-setup.sh --skip-ec2-provision
+```text
+.
+├── docker/
+│   └── aws/
+│       ├── README.md
+│       └── deepgram-aws-docker-setup.sh
+├── kubernetes/
+│   └── aws/
+│       └── README.md
+└── src/deepgram_self_hosted/        # Python CLI + EKS wizard
 ```
 
-### 2) Run from local machine (provision EC2 first)
+## Deployment Paths
+
+- [Kubernetes on AWS EKS](kubernetes/aws/README.md) — Python wizard creates or uses an EKS cluster, configures EFS, generates Helm values, and deploys the Deepgram self-hosted chart.
+- [Docker on AWS EC2](docker/aws/README.md) — provisions or configures an Ubuntu EC2 host, installs Docker/Podman, and runs Deepgram self-hosted containers.
+
+## Local CLI
+
+This repo includes a `uv`-managed Python CLI that runs locally without installing the package globally.
 
 ```bash
-chmod +x ./deepgram-aws-docker-setup.sh
-./deepgram-aws-docker-setup.sh
+uv run dg-self-hosted --help
 ```
 
-Choose:
-- `On my local machine (provision EC2 first)` to create/use key pair, security group, and instance
-- then copy + execute remotely automatically or manually
+You can also use the local wrapper:
 
-## Prompt Tips
-
-- Model URL input accepts:
-  - Path to a local file (one URL per line), or
-  - Direct comma-separated URLs
-- Defaults are shown as `Default: ...`
-- Auto-discovered values are shown as `Auto-detected: ...`
-
-## Troubleshooting
-
-### Docker compose command issues
-
-Symptom:
-- `unknown shorthand flag: 'f' in -f` when running `docker compose -f ...`
-
-Cause:
-- Compose v2 plugin missing; host only has `docker-compose` v1.
-
-Fix:
 ```bash
-sudo apt-get update
-sudo apt-get install -y docker-compose-v2
-docker compose version
+./dg-self-hosted --help
 ```
 
-### Docker daemon permission denied
+Common commands:
 
-Symptom:
-- `PermissionError: [Errno 13] Permission denied` for `/var/run/docker.sock`
-
-Fix:
 ```bash
-sudo usermod -aG docker "$USER"
-newgrp docker
+# Interactive wizard for AWS EKS (asks for cluster, node groups, models, EFS, secrets, etc.)
+uv run dg-self-hosted setup kubernetes aws
+
+# Re-run a saved deployment config (shows summary, lets you edit, then deploys)
+uv run dg-self-hosted setup kubernetes aws --config deployments/stt-2.yaml
+
+# Run the existing interactive AWS EC2 Docker/Podman setup script
+uv run dg-self-hosted setup docker aws
+
+# Generate a reusable Kubernetes/AWS base config without going through the wizard
+uv run dg-self-hosted config init kubernetes aws --output deployments/base.yaml
+
+# Prepare EFS for the EKS cluster and write the EFS ID back to the config
+uv run dg-self-hosted prepare efs kubernetes aws --config deployments/stt-2.yaml
+
+# Render Helm values without touching AWS
+uv run dg-self-hosted plan kubernetes aws --config deployments/stt-2.yaml --resolve-aws
+
+# Show current Kubernetes pods, services, and Helm release status
+uv run dg-self-hosted status kubernetes aws
 ```
-Or run commands with `sudo` in current session.
 
-### NVIDIA driver not loaded / NVML errors
+The Kubernetes/AWS workflow runs natively in Python — it shells out to `aws`, `eksctl`, `kubectl`, and `helm` directly, so no shell wrapper is involved.
 
-Symptoms:
-- `NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver`
-- engine startup fails with NVML/driver errors
+## The EKS Wizard
 
-Fix:
+`setup kubernetes aws` (no `--config`) opens an interactive Questionary wizard with curated dropdowns for region, Kubernetes version, and per-node-group instance type (engine GPU instances, API c5n family, general-purpose for control-plane and license-proxy). Each dropdown shows `(default)` next to the suggested value and offers an `Other (enter custom)` entry for off-list values. Required fields (Quay credentials, API key, existing-EFS ID, deployment-file path) are enforced with non-empty validators.
+
+After the wizard collects answers it shows a Rich summary table (Cluster / Node groups / Other) and a four-way menu:
+
+- **Deploy** — write the config to disk and run the full deployment. When `Dry run` is on, this option is renamed to **Render artifacts (dry run)**.
+- **Edit a field** — pick any of the most-edited fields (region, instance types, replica counts, license-proxy toggle, dry-run toggle, etc.) and re-prompt for it. The summary refreshes after each edit.
+- **Save config and exit** — write the config but don't deploy.
+- **Cancel** — discard.
+
+If you also choose `Use existing EFS`, the model picker offers a third option, **Skip (use models already on EFS)**, which leaves `models.add` empty in the rendered Helm values so the model-manager re-uses what's already on the volume.
+
+## Reusing Configs
+
+For repeat deployments, generate a base Kubernetes/AWS config once:
+
 ```bash
-sudo reboot
+uv run dg-self-hosted config init kubernetes aws --output deployments/base.yaml
 ```
-Then verify:
+
+Edit the generated YAML to add either `models.urls` or `models.deployment_file`, plus any node sizing, `instance_type` overrides, or action defaults you want to reuse. The full schema is the dict produced by `default_eks_config()` — every node group accepts `instance_type`, `min`, `desired`, and `max`.
+
+Clone it for a new cluster:
+
 ```bash
-nvidia-smi
+uv run dg-self-hosted config clone \
+  --from deployments/base.yaml \
+  --output deployments/stt-2.yaml \
+  --cluster-name stt-2 \
+  --region us-east-2
 ```
 
-### Aura-2 not serving traffic
+Deploy from the cloned config:
 
-Symptom:
-- `Engine not configured to serve Aura-2 traffic`
-
-Checks:
-- Ensure Aura-2 compose template is used (`docker-compose.aura-2*.yml`)
-- Ensure Aura-2 UUID env vars are present under `services.engine.environment`
-- Ensure selected Aura-2 model files match variant (`en`, `es`, or `polyglot`)
-
-### API 401 responses
-
-Symptom:
-- API requests return `401 Unauthorized`
-
-Fix:
-- Include `Authorization: Token $DEEPGRAM_API_KEY` in manual requests
-- Ensure `.env` and/or `~/.deepgram-self-hosted.env` contains valid key
-
-### License proxy connection refused
-
-Symptom:
-- API warns about failed license proxy connection
-
-Checks:
-- `license-proxy` container is running
-- `license-proxy.toml` and API config use matching protocol/port
-- Internal service endpoint is reachable from API container
-
-Useful commands:
 ```bash
-sudo docker compose -f /home/ubuntu/deepgram-self-hosted/config/compose.yml ps
-sudo docker logs --tail 200 config_api_1
-sudo docker logs --tail 200 config_engine_1
-sudo docker logs --tail 200 config_license-proxy_1
+uv run dg-self-hosted setup kubernetes aws --config deployments/stt-2.yaml
 ```
 
-## Notes
+`setup ... --config X` loads the YAML, shows the same summary loop the wizard uses, and lets you edit fields before deploying. Any edits you make are written back to the same path before deploy, so re-runs stay in sync with what was actually applied.
 
-- `g6.2xlarge` has 1 GPU (NVIDIA L4). Use `CUDA_VISIBLE_DEVICES="0"`.
-- Script automation is tuned for Ubuntu; other distros may require manual package/runtime adjustments.
+Render Kubernetes artifacts without touching AWS:
+
+```bash
+uv run dg-self-hosted plan kubernetes aws \
+  --config deployments/stt-2.yaml \
+  --output-dir deployments/stt-2-artifacts
+```
+
+The Python `plan` command owns artifact rendering. By default it runs offline and may leave AWS-discovered values, such as the cluster-autoscaler role ARN, as placeholders.
+
+Prepare EFS after the EKS cluster exists:
+
+```bash
+uv run dg-self-hosted prepare efs kubernetes aws --config deployments/stt-2.yaml
+```
+
+This Python-native step discovers the EKS VPC/subnets, creates or verifies EFS, ensures NFS ingress, creates missing mount targets, and writes the EFS ID back to the config by default.
+
+After `prepare efs`, render complete values by resolving AWS-discovered fields:
+
+```bash
+uv run dg-self-hosted plan kubernetes aws \
+  --config deployments/stt-2.yaml \
+  --output-dir deployments/stt-2-artifacts \
+  --resolve-aws
+```
+
+`--resolve-aws` reads the final IAM role ARN from AWS and requires `efs.file_system_id` to already be present in the config. It does not create or modify AWS resources.
+
+## Secrets Handling
+
+Generated configs default to `secrets.mode: external`, so the deployment expects Kubernetes secrets (`dg-regcred` and `dg-self-hosted-api-key`) to already exist in the `dg-self-hosted` namespace.
+
+If you choose `Create in-cluster secrets` in the wizard, the tooling does not write your credentials to disk:
+
+- The wizard collects them in memory only.
+- Before the config is saved, the three secret fields (`secrets.registry_username`, `secrets.registry_password`, `secrets.api_key`) are stripped from the saved YAML — `secrets.mode: create` is preserved, but the values are written as `null`.
+- At deploy time, credentials are resolved in this order:
+  1. The in-memory values from the wizard (current run).
+  2. Environment variables: `DG_REGISTRY_USERNAME`, `DG_REGISTRY_PASSWORD`, `DG_API_KEY`.
+  3. Values present in the YAML (only useful if you hand-edited them in).
+- If none of the above provide all three values, the deploy aborts with a message naming the env vars to set.
+
+Every config written by `dg-self-hosted` (wizard, `config init`, `config clone`, `prepare efs` write-back) is `chmod 0600` — owner-only on disk.
+
+## Shared Requirements
+
+- [`uv`](https://docs.astral.sh/uv/) for running the local Python CLI
+- [Python 3.11+](https://docs.python.org/3/) managed by `uv`
+- [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-welcome.html) configured (`aws sts get-caller-identity` works) — both paths
+- For EKS (Kubernetes path): [`eksctl`](https://eksctl.io/), [`kubectl`](https://kubernetes.io/docs/tasks/tools/#kubectl), [`helm`](https://helm.sh/docs/intro/install/)
+- [Deepgram self-hosted API key](https://developers.deepgram.com/docs/self-hosted-introduction)
+- [Quay](https://docs.projectquay.io/) credentials with access to required Deepgram self-hosted images
+- Deepgram model `.dg` URLs provided for your self-hosted deployment
+- Cloud-provider permissions for the selected deployment path
+
+## Python Package Docs
+
+The local CLI dependencies are managed by `uv` from [pyproject.toml](pyproject.toml):
+
+- [`Typer`](https://typer.tiangolo.com/) — CLI command framework
+- [`Questionary`](https://questionary.readthedocs.io/) — interactive prompts and dropdowns for the wizard
+- [`Rich`](https://rich.readthedocs.io/) — terminal formatting and the summary tables
+- [`PyYAML`](https://pyyaml.org/wiki/PyYAMLDocumentation) — YAML config parsing/rendering
+- [`pytest`](https://docs.pytest.org/) — tests
+- [`Ruff`](https://docs.astral.sh/ruff/) — linting
+
+## Generated Files
+
+The Kubernetes wizard always writes artifacts to `kubernetes/aws/artifacts/` (relative to the repo root), regardless of the directory you ran the CLI from:
+
+- `cluster-config.yaml` — Deepgram-style `eksctl` cluster config
+- `eksctl-expanded-cluster-config.yaml` — optional expanded `eksctl --dry-run` output
+- `my-values.yaml` — Helm values rendered after EFS provisioning
+- `session.yaml` — default save path when the wizard runs without `--config`
+
+The Docker path writes its compose/TOML output into `$HOME/deepgram-self-hosted/` on the target host.
+
+`artifacts/` and ad-hoc test output under `test-leah/` are gitignored, along with local env/secret files.
+
+## Adding Providers
+
+Use this structure for future work:
+
+```text
+docker/<provider>/
+kubernetes/<provider>/
+```
+
+Each provider directory should contain:
+
+- A provider-specific setup script (Docker path) or be wired into the Python wizard (Kubernetes path)
+- A local `README.md`
+- Any provider-specific templates or support files
+
+Keep the root README as a navigation and shared-prerequisites document. Put provider-specific commands, prompts, and troubleshooting in the provider README.
