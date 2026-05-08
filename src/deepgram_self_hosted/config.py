@@ -44,7 +44,7 @@ DEFAULT_EKS_CONFIG: dict[str, Any] = {
         "enabled": False,
     },
     "cluster_autoscaler": {
-        "enabled": False,
+        "enabled": True,
     },
     "actions": {
         "dry_run": False,
