@@ -243,6 +243,71 @@ def test_native_setup_aborts_when_actions_continue_is_false(tmp_path, monkeypatc
     assert not (artifact_dir / "my-values.yaml").exists()
 
 
+def test_render_values_omits_flux_blocks_for_nova_profile() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-1"
+    config["models"]["urls"] = ["https://example.com/m.dg"]
+    # default model_profile is "nova"
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert "features" not in rendered["api"]
+    assert "flux" not in rendered["engine"]
+
+
+def test_render_values_includes_flux_blocks_when_stt_flux_profile() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-1"
+    config["models"]["urls"] = ["https://example.com/m.dg"]
+    config["deployment"]["model_profile"] = "flux"
+    config["deployment"]["flux"] = {"max_streams": 16, "model_name": "flux-general-multi"}
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert rendered["api"]["features"]["listenV2"] is True
+    assert rendered["engine"]["flux"] == {
+        "enabled": True,
+        "max_streams": 16,
+        "model_name": "flux-general-multi",
+    }
+
+
+def test_render_values_flux_omits_max_streams_when_blank() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-1"
+    config["models"]["urls"] = ["https://example.com/m.dg"]
+    config["deployment"]["model_profile"] = "flux"
+    # max_streams left as None (default)
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    flux_block = rendered["engine"]["flux"]
+    assert flux_block["enabled"] is True
+    assert flux_block["model_name"] == "flux-general-en"
+    assert "max_streams" not in flux_block
+
+
+def test_render_values_ignores_flux_profile_when_deployment_is_tts() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-1"
+    config["models"]["urls"] = ["https://example.com/m.dg"]
+    config["deployment"]["type"] = "TTS"
+    config["deployment"]["model_profile"] = "flux"  # ignored because not STT
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert "features" not in rendered["api"]
+    assert "flux" not in rendered["engine"]
+
+
 def test_render_values_allows_empty_models_when_reusing_efs() -> None:
     config = default_eks_config()
     config["efs"]["mode"] = "existing"

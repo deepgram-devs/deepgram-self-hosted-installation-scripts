@@ -19,6 +19,11 @@ DEFAULT_EKS_CONFIG: dict[str, Any] = {
     "deployment": {
         "type": "STT",
         "service_type": "ClusterIP",
+        "model_profile": "nova",
+        "flux": {
+            "max_streams": None,
+            "model_name": "flux-general-en",
+        },
     },
     "node_groups": {
         "control_plane": {"min": 1, "desired": 1, "max": 3, "instance_type": "t3.large"},
