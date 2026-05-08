@@ -215,6 +215,7 @@ def render_values(
             },
             "auto": {"enabled": False},
         },
+        "agent": {"enabled": False},
         "api": {
             "affinity": _node_affinity("api"),
             "resources": {
@@ -226,12 +227,20 @@ def render_values(
         "engine": {
             "affinity": _node_affinity("engine"),
             "resources": {
-                "requests": {"memory": "30Gi", "cpu": "4000m", "gpu": 1},
+                "requests": {"memory": "28Gi", "cpu": "6000m", "gpu": 1},
                 "limits": {"memory": "40Gi", "cpu": "8000m", "gpu": 1},
             },
             "concurrencyLimit": {"activeRequests": None},
             "modelManager": {
-                "volumes": {"aws": {"efs": {"enabled": True, "fileSystemId": efs_id}}},
+                "volumes": {
+                    "aws": {
+                        "efs": {
+                            "enabled": True,
+                            "fileSystemId": efs_id,
+                            "namePrefix": "dg-models",
+                        }
+                    }
+                },
                 "models": {"add": models, "remove": []},
             },
         },
@@ -239,14 +248,14 @@ def render_values(
             "enabled": bool(get_path(config, "license_proxy", "enabled", default=False)),
             "affinity": _node_affinity("license-proxy"),
             "resources": {
-                "requests": {"memory": "1Gi", "cpu": "1000m"},
+                "requests": {"memory": "6Gi", "cpu": "1500m"},
                 "limits": {"memory": "8Gi", "cpu": "2000m"},
             },
             "service": {"type": service_type},
         },
         "cluster-autoscaler": {
             "enabled": bool(
-                get_path(config, "cluster_autoscaler", "enabled", default=False)
+                get_path(config, "cluster_autoscaler", "enabled", default=True)
             ),
             "rbac": {
                 "serviceAccount": {
@@ -257,10 +266,14 @@ def render_values(
             "autoDiscovery": {"clusterName": cluster_name},
             "awsRegion": region,
         },
+        # The AL2023-NVIDIA EKS AMI variant (auto-selected by eksctl for GPU instance
+        # types) ships with NVIDIA drivers and the container toolkit pre-installed,
+        # so we ask the GPU Operator not to install its own copies. Enable both if
+        # you switch to a non-NVIDIA AMI such as plain AL2023 or Ubuntu.
         "gpu-operator": {
             "enabled": True,
-            "driver": {"enabled": True, "version": "550.54.15"},
-            "toolkit": {"enabled": True, "version": "v1.15.0-ubi8"},
+            "driver": {"enabled": False},
+            "toolkit": {"enabled": False},
         },
     }
     return yaml.safe_dump(document, sort_keys=False)
