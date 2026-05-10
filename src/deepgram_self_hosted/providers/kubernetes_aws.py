@@ -161,8 +161,18 @@ def _run_native_setup(
 
     if get_path(config, "actions", "create_cluster", default=True):
         console.print("Creating EKS cluster (this may take 15-25 minutes)...")
+        # eksctl auto-installs an NVIDIA device plugin DaemonSet into kube-system
+        # whenever a GPU instance type is paired with the EKS-Optimized Accelerated
+        # AMI. The Deepgram chart's gpu-operator subchart deploys its own device
+        # plugin, so leaving eksctl's default on creates two DaemonSets racing for
+        # the kubelet device-plugin socket. We let gpu-operator be the single
+        # source of truth.
         run(
-            ["eksctl", "create", "cluster", "-f", str(cluster_config_path)],
+            [
+                "eksctl", "create", "cluster",
+                "-f", str(cluster_config_path),
+                "--install-nvidia-plugin=false",
+            ],
             stream=True,
             check=True,
         )
