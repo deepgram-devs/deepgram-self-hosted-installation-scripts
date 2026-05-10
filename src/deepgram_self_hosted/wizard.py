@@ -34,6 +34,8 @@ ENGINE_INSTANCES = [
     OTHER,
 ]
 API_INSTANCES = ["c5n.xlarge", "c5.xlarge", "c5.2xlarge", "m5.xlarge", OTHER]
+STT_MODEL_PROFILES = ["nova", "flux"]
+FLUX_MODELS = ["flux-general-en", "flux-general-multi"]
 
 
 def _annotated_select(message: str, choices: list[str], default: str) -> str:
@@ -123,6 +125,8 @@ def run_eks_wizard() -> dict[str, Any]:
     config["deployment"]["service_type"] = _annotated_select(
         "Service exposure type", ["ClusterIP", "LoadBalancer", "NodePort"], "ClusterIP"
     )
+    if config["deployment"]["type"] == "STT":
+        _ask_stt_model_profile(config)
 
     _node_group("Control plane", "control_plane", config, GENERAL_INSTANCES)
     _node_group("Engine (GPU)", "engine", config, ENGINE_INSTANCES)
@@ -143,6 +147,44 @@ def run_eks_wizard() -> dict[str, Any]:
     ).unsafe_ask()
 
     return config
+
+
+def _ask_stt_model_profile(config: dict[str, Any]) -> None:
+    profile = _annotated_select(
+        "STT model profile",
+        STT_MODEL_PROFILES,
+        str(get_path(config, "deployment", "model_profile", default="nova")),
+    )
+    config["deployment"]["model_profile"] = profile
+    if profile != "flux":
+        return
+
+    questionary.print(
+        "Note: run Flux on a dedicated cluster with no other STT models.",
+        style="italic",
+    )
+    config["deployment"].setdefault("flux", {})
+    config["deployment"]["flux"]["model_name"] = _annotated_select(
+        "Flux model",
+        FLUX_MODELS,
+        str(get_path(config, "deployment", "flux", "model_name", default="flux-general-en")),
+    )
+
+    def _validate_optional_int(value: str) -> bool | str:
+        text = value.strip()
+        if not text:
+            return True
+        try:
+            int(text)
+        except ValueError:
+            return "Enter an integer or leave blank."
+        return True
+
+    raw = questionary.text(
+        "Max concurrent streams (leave blank if non-production)",
+        validate=_validate_optional_int,
+    ).unsafe_ask().strip()
+    config["deployment"]["flux"]["max_streams"] = int(raw) if raw else None
 
 
 def _ask_models(config: dict[str, Any]) -> None:
@@ -217,6 +259,7 @@ EDITABLE_FIELDS: list[tuple[str, str]] = [
     ("cluster.region", "Region"),
     ("cluster.kubernetes_version", "Kubernetes version"),
     ("deployment.service_type", "Service type"),
+    ("deployment.model_profile", "STT model profile"),
     ("node_groups.control_plane.instance_type", "Control plane instance type"),
     ("node_groups.control_plane.desired", "Control plane desired count"),
     ("node_groups.engine.instance_type", "Engine instance type"),
@@ -256,6 +299,8 @@ def edit_field(config: dict[str, Any]) -> None:
         parent[leaf] = _annotated_select(
             label, ["ClusterIP", "LoadBalancer", "NodePort"], str(current or "ClusterIP")
         )
+    elif leaf == "model_profile":
+        parent[leaf] = _annotated_select(label, STT_MODEL_PROFILES, str(current or "nova"))
     elif leaf in {"enabled", "dry_run"}:
         parent[leaf] = questionary.confirm(label, default=bool(current)).unsafe_ask()
     elif leaf == "desired":

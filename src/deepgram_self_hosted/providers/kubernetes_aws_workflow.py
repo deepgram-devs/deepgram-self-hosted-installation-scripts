@@ -203,6 +203,51 @@ def render_values(
             "Run prepare efs kubernetes aws first."
         )
 
+    deployment_type = str(get_path(config, "deployment", "type", default="STT")).upper()
+    model_profile = str(get_path(config, "deployment", "model_profile", default="nova")).lower()
+    is_flux = deployment_type == "STT" and model_profile == "flux"
+
+    api_block: dict[str, Any] = {
+        "affinity": _node_affinity("api"),
+        "resources": {
+            "requests": {"memory": "4Gi", "cpu": "2000m"},
+            "limits": {"memory": "8Gi", "cpu": "4000m"},
+        },
+        "service": {"type": service_type},
+    }
+    if is_flux:
+        api_block["features"] = {"listenV2": True}
+
+    engine_block: dict[str, Any] = {
+        "affinity": _node_affinity("engine"),
+        "resources": {
+            "requests": {"memory": "28Gi", "cpu": "6000m", "gpu": 1},
+            "limits": {"memory": "40Gi", "cpu": "8000m", "gpu": 1},
+        },
+        "concurrencyLimit": {"activeRequests": None},
+        "modelManager": {
+            "volumes": {
+                "aws": {
+                    "efs": {
+                        "enabled": True,
+                        "fileSystemId": efs_id,
+                        "namePrefix": "dg-models",
+                    }
+                }
+            },
+            "models": {"add": models, "remove": []},
+        },
+    }
+    if is_flux:
+        flux_block: dict[str, Any] = {"enabled": True}
+        max_streams = get_path(config, "deployment", "flux", "max_streams")
+        if max_streams is not None:
+            flux_block["max_streams"] = int(max_streams)
+        flux_block["model_name"] = str(
+            get_path(config, "deployment", "flux", "model_name", default="flux-general-en")
+        )
+        engine_block["flux"] = flux_block
+
     document = {
         "global": {
             "pullSecretRef": "dg-regcred",
@@ -216,34 +261,8 @@ def render_values(
             "auto": {"enabled": False},
         },
         "agent": {"enabled": False},
-        "api": {
-            "affinity": _node_affinity("api"),
-            "resources": {
-                "requests": {"memory": "4Gi", "cpu": "2000m"},
-                "limits": {"memory": "8Gi", "cpu": "4000m"},
-            },
-            "service": {"type": service_type},
-        },
-        "engine": {
-            "affinity": _node_affinity("engine"),
-            "resources": {
-                "requests": {"memory": "28Gi", "cpu": "6000m", "gpu": 1},
-                "limits": {"memory": "40Gi", "cpu": "8000m", "gpu": 1},
-            },
-            "concurrencyLimit": {"activeRequests": None},
-            "modelManager": {
-                "volumes": {
-                    "aws": {
-                        "efs": {
-                            "enabled": True,
-                            "fileSystemId": efs_id,
-                            "namePrefix": "dg-models",
-                        }
-                    }
-                },
-                "models": {"add": models, "remove": []},
-            },
-        },
+        "api": api_block,
+        "engine": engine_block,
         "licenseProxy": {
             "enabled": bool(get_path(config, "license_proxy", "enabled", default=False)),
             "affinity": _node_affinity("license-proxy"),

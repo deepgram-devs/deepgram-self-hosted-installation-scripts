@@ -140,17 +140,6 @@ Fix:
 - Compare Deepgram-style input against `artifacts/cluster-config.yaml`
 - Use `artifacts/eksctl-expanded-cluster-config.yaml` only to inspect what `eksctl` will derive internally
 
-### EFS CSI addon role missing
-
-Symptom:
-- Script fails while installing `aws-efs-csi-driver`
-- Error mentions an EFS CSI IAM role
-
-Checks:
-- The cluster was created from `artifacts/cluster-config.yaml`
-- `eksctl` successfully created IAM service accounts
-- AWS IAM contains the cluster-scoped EFS CSI role printed in the script summary, for example `<cluster-name>-efs-csi-driver-role`
-
 ### Engine pod stuck in ContainerCreating
 
 Symptom:

@@ -33,8 +33,20 @@ def _cluster_table(config: dict[str, Any]) -> Table:
     table.add_row(
         "Kubernetes version", str(get_path(config, "cluster", "kubernetes_version", default=""))
     )
-    table.add_row("Deployment type", str(get_path(config, "deployment", "type", default="")))
+    deployment_type = str(get_path(config, "deployment", "type", default=""))
+    table.add_row("Deployment type", deployment_type)
     table.add_row("Service type", str(get_path(config, "deployment", "service_type", default="")))
+    if deployment_type.upper() == "STT":
+        profile = str(get_path(config, "deployment", "model_profile", default="nova")).lower()
+        if profile == "flux":
+            model_name = str(
+                get_path(config, "deployment", "flux", "model_name", default="flux-general-en")
+            )
+            max_streams = get_path(config, "deployment", "flux", "max_streams")
+            streams_label = f"max_streams={max_streams}" if max_streams is not None else "no limit"
+            table.add_row("Model profile", f"flux ({model_name}, {streams_label})")
+        else:
+            table.add_row("Model profile", profile)
     return table
 
 
