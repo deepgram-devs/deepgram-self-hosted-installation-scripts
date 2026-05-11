@@ -36,6 +36,16 @@ ENGINE_INSTANCES = [
 API_INSTANCES = ["c5n.xlarge", "c5.xlarge", "c5.2xlarge", "m5.xlarge", OTHER]
 STT_MODEL_PROFILES = ["nova", "flux"]
 FLUX_MODELS = ["flux-general-en", "flux-general-multi"]
+TTS_ENGINE_INSTANCES = [
+    "g6.12xlarge",   # 4x NVIDIA L4
+    "g6.24xlarge",
+    "g5.12xlarge",   # 4x NVIDIA A10G
+    "g5.24xlarge",
+    "g4dn.12xlarge",  # 4x NVIDIA T4
+    "p4d.24xlarge",  # 8x NVIDIA A100
+    OTHER,
+]
+AURA2_VARIANTS = ["en", "es", "polyglot"]
 
 
 def _annotated_select(message: str, choices: list[str], default: str) -> str:
@@ -125,15 +135,24 @@ def run_eks_wizard() -> dict[str, Any]:
     config["deployment"]["service_type"] = _annotated_select(
         "Service exposure type", ["ClusterIP", "LoadBalancer", "NodePort"], "ClusterIP"
     )
-    if config["deployment"]["type"] == "STT":
+    is_tts = config["deployment"]["type"] == "TTS"
+    if is_tts:
+        _ask_tts_aura2(config)
+    else:
         _ask_stt_model_profile(config)
 
     _node_group("Control plane", "control_plane", config, GENERAL_INSTANCES)
-    _node_group("Engine (GPU)", "engine", config, ENGINE_INSTANCES)
+    if is_tts:
+        # Aura-2 needs 2 GPUs per pod, so default to a multi-GPU instance.
+        if config["node_groups"]["engine"].get("instance_type") in (None, "g6.2xlarge"):
+            config["node_groups"]["engine"]["instance_type"] = "g6.12xlarge"
+        _node_group("Engine (multi-GPU)", "engine", config, TTS_ENGINE_INSTANCES)
+    else:
+        _node_group("Engine (GPU)", "engine", config, ENGINE_INSTANCES)
     _node_group("API", "api", config, API_INSTANCES)
 
     config["license_proxy"]["enabled"] = questionary.confirm(
-        "Enable License Proxy?", default=False
+        "Enable License Proxy?", default=is_tts
     ).unsafe_ask()
     if config["license_proxy"]["enabled"]:
         _node_group("License Proxy", "license_proxy", config, GENERAL_INSTANCES)
@@ -185,6 +204,36 @@ def _ask_stt_model_profile(config: dict[str, Any]) -> None:
         validate=_validate_optional_int,
     ).unsafe_ask().strip()
     config["deployment"]["flux"]["max_streams"] = int(raw) if raw else None
+
+
+def _ask_tts_aura2(config: dict[str, Any]) -> None:
+    questionary.print(
+        "Note: Aura-2 needs 2 GPUs per engine pod. The wizard will default the engine "
+        "node group to a multi-GPU instance type.",
+        style="italic",
+    )
+    config["deployment"].setdefault("tts", {})
+    config["deployment"]["tts"]["variant"] = _annotated_select(
+        "Aura-2 language variant",
+        AURA2_VARIANTS,
+        str(get_path(config, "deployment", "tts", "variant", default="en")),
+    )
+
+    def _validate_positive_int(value: str) -> bool | str:
+        text = value.strip()
+        if not text:
+            return "Required."
+        try:
+            return True if int(text) > 0 else "Must be positive."
+        except ValueError:
+            return "Enter a positive integer."
+
+    raw = questionary.text(
+        "Aura-2 max batch size",
+        default=str(get_path(config, "deployment", "tts", "max_batch_size", default=8)),
+        validate=_validate_positive_int,
+    ).unsafe_ask().strip()
+    config["deployment"]["tts"]["max_batch_size"] = int(raw)
 
 
 def _ask_models(config: dict[str, Any]) -> None:
@@ -260,6 +309,8 @@ EDITABLE_FIELDS: list[tuple[str, str]] = [
     ("cluster.kubernetes_version", "Kubernetes version"),
     ("deployment.service_type", "Service type"),
     ("deployment.model_profile", "STT model profile"),
+    ("deployment.tts.variant", "Aura-2 language variant"),
+    ("deployment.tts.max_batch_size", "Aura-2 max batch size"),
     ("node_groups.control_plane.instance_type", "Control plane instance type"),
     ("node_groups.control_plane.desired", "Control plane desired count"),
     ("node_groups.engine.instance_type", "Engine instance type"),
@@ -301,6 +352,10 @@ def edit_field(config: dict[str, Any]) -> None:
         )
     elif leaf == "model_profile":
         parent[leaf] = _annotated_select(label, STT_MODEL_PROFILES, str(current or "nova"))
+    elif leaf == "variant":
+        parent[leaf] = _annotated_select(label, AURA2_VARIANTS, str(current or "en"))
+    elif leaf == "max_batch_size":
+        parent[leaf] = _int_prompt(label, int(current) if current is not None else 8)
     elif leaf in {"enabled", "dry_run"}:
         parent[leaf] = questionary.confirm(label, default=bool(current)).unsafe_ask()
     elif leaf == "desired":

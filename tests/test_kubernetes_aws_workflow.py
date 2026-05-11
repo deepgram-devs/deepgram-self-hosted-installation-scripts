@@ -308,6 +308,104 @@ def test_render_values_ignores_flux_profile_when_deployment_is_tts() -> None:
     assert "flux" not in rendered["engine"]
 
 
+def test_render_values_emits_aura2_block_for_tts_english() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-1"
+    config["models"]["urls"] = ["https://example.com/aura2-en.dg"]
+    config["deployment"]["type"] = "TTS"
+    # default tts.variant is "en", default max_batch_size is 8
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert rendered["aura2"] == {
+        "enabled": True,
+        "english": {
+            "enabled": True,
+            "maxBatchSize": 8,
+            "t2cUuid": "0ec06c9b-0aa0-44d0-a001-3ec57d32229e",
+            "c2aUuid": "2e5096c7-7bf1-435e-bbdd-f673f88d0ebd",
+            "cudaVisibleDevices": "0,1",
+        },
+    }
+    assert rendered["engine"]["resources"]["requests"]["gpu"] == 2
+    assert rendered["engine"]["resources"]["limits"]["gpu"] == 2
+    assert rendered["engine"]["resources"]["requests"]["memory"] == "32Gi"
+    assert rendered["engine"]["resources"]["requests"]["cpu"] == "4000m"
+    assert rendered["api"]["driverPool"]["standard"]["timeoutBackoff"] == 1.2
+    assert rendered["kube-prometheus-stack"] == {
+        "enabled": True,
+        "fullnameOverride": "dg-prometheus-stack",
+    }
+    assert rendered["prometheus-adapter"] == {"enabled": True}
+
+
+def test_render_values_emits_aura2_block_for_tts_spanish() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-1"
+    config["models"]["urls"] = ["https://example.com/aura2-es.dg"]
+    config["deployment"]["type"] = "TTS"
+    config["deployment"]["tts"]["variant"] = "es"
+    config["deployment"]["tts"]["max_batch_size"] = 16
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert rendered["aura2"]["spanish"] == {
+        "enabled": True,
+        "maxBatchSize": 16,
+        "t2cUuid": "c053c7a8-7317-4de8-8a50-7e01c54e7ba9",
+        "c2aUuid": "04355c1e-8148-478d-9f6c-6a6c54ec3591",
+        "cudaVisibleDevices": "0,1",
+    }
+    assert "english" not in rendered["aura2"]
+
+
+def test_render_values_emits_aura2_block_for_tts_polyglot() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-1"
+    config["models"]["urls"] = ["https://example.com/aura2-poly.dg"]
+    config["deployment"]["type"] = "TTS"
+    config["deployment"]["tts"]["variant"] = "polyglot"
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert rendered["aura2"]["polyglot"]["t2cUuid"] == "04975889-c601-4f80-a02f-0f2f9c22deaf"
+    assert rendered["aura2"]["polyglot"]["c2aUuid"] == "9e94567e-11e7-4619-adbc-d28212194367"
+
+
+def test_render_values_omits_aura2_block_for_stt() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-1"
+    config["models"]["urls"] = ["https://example.com/m.dg"]
+    # default type is STT
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert "aura2" not in rendered
+    assert "driverPool" not in rendered["api"]
+    assert rendered["engine"]["resources"]["requests"]["gpu"] == 1
+    assert "kube-prometheus-stack" not in rendered
+    assert "prometheus-adapter" not in rendered
+
+
+def test_render_values_rejects_unknown_aura2_variant() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-1"
+    config["models"]["urls"] = ["https://example.com/m.dg"]
+    config["deployment"]["type"] = "TTS"
+    config["deployment"]["tts"]["variant"] = "klingon"
+
+    with pytest.raises(ValueError, match="deployment.tts.variant"):
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+
+
 def test_render_values_allows_empty_models_when_reusing_efs() -> None:
     config = default_eks_config()
     config["efs"]["mode"] = "existing"

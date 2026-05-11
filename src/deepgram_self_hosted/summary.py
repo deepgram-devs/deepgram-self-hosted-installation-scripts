@@ -47,6 +47,13 @@ def _cluster_table(config: dict[str, Any]) -> Table:
             table.add_row("Model profile", f"flux ({model_name}, {streams_label})")
         else:
             table.add_row("Model profile", profile)
+    elif deployment_type.upper() == "TTS":
+        variant = str(get_path(config, "deployment", "tts", "variant", default="en"))
+        batch = get_path(config, "deployment", "tts", "max_batch_size", default=8)
+        table.add_row(
+            "Model profile",
+            f"Aura-2 ({variant}, max_batch_size={batch}, 2 GPUs/pod)",
+        )
     return table
 
 
