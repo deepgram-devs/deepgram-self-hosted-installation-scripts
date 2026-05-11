@@ -24,6 +24,10 @@ DEFAULT_EKS_CONFIG: dict[str, Any] = {
             "max_streams": None,
             "model_name": "flux-general-en",
         },
+        "tts": {
+            "variant": "en",
+            "max_batch_size": 8,
+        },
     },
     "node_groups": {
         "control_plane": {"min": 1, "desired": 1, "max": 3, "instance_type": "t3.large"},

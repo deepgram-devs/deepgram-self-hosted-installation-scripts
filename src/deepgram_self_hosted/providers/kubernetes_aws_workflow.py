@@ -180,6 +180,30 @@ def render_cluster_config(config: dict[str, Any]) -> str:
     return yaml.safe_dump(document, sort_keys=False)
 
 
+# UUIDs paired with engine release-260430. Pulled from
+# self-hosted-resources/charts/deepgram-self-hosted/samples/04-aura-2-setup.values.yaml
+# and 06-aura-2-polyglot-setup.values.yaml. Each variant occupies GPU indices 0 and 1
+# on the engine pod (cudaVisibleDevices "0,1"). Multi-language deployments require
+# manually editing the rendered values to add a second variant on indices "2,3".
+AURA2_VARIANTS: dict[str, dict[str, str]] = {
+    "en": {
+        "chart_key": "english",
+        "t2c_uuid": "0ec06c9b-0aa0-44d0-a001-3ec57d32229e",
+        "c2a_uuid": "2e5096c7-7bf1-435e-bbdd-f673f88d0ebd",
+    },
+    "es": {
+        "chart_key": "spanish",
+        "t2c_uuid": "c053c7a8-7317-4de8-8a50-7e01c54e7ba9",
+        "c2a_uuid": "04355c1e-8148-478d-9f6c-6a6c54ec3591",
+    },
+    "polyglot": {
+        "chart_key": "polyglot",
+        "t2c_uuid": "04975889-c601-4f80-a02f-0f2f9c22deaf",
+        "c2a_uuid": "9e94567e-11e7-4619-adbc-d28212194367",
+    },
+}
+
+
 def render_values(
     config: dict[str, Any],
     *,
@@ -206,6 +230,7 @@ def render_values(
     deployment_type = str(get_path(config, "deployment", "type", default="STT")).upper()
     model_profile = str(get_path(config, "deployment", "model_profile", default="nova")).lower()
     is_flux = deployment_type == "STT" and model_profile == "flux"
+    is_tts = deployment_type == "TTS"
 
     api_block: dict[str, Any] = {
         "affinity": _node_affinity("api"),
@@ -217,12 +242,29 @@ def render_values(
     }
     if is_flux:
         api_block["features"] = {"listenV2": True}
+    if is_tts:
+        # Aura-2 deployments load-balance across per-language engine pods.
+        api_block["driverPool"] = {
+            "standard": {
+                "timeoutBackoff": 1.2,
+                "retrySleep": "2s",
+                "retryBackoff": 1.6,
+                "maxResponseSize": "1073741824",
+            }
+        }
+
+    if is_tts:
+        engine_requests = {"memory": "32Gi", "cpu": "4000m", "gpu": 2}
+        engine_limits = {"memory": "40Gi", "cpu": "8000m", "gpu": 2}
+    else:
+        engine_requests = {"memory": "28Gi", "cpu": "6000m", "gpu": 1}
+        engine_limits = {"memory": "40Gi", "cpu": "8000m", "gpu": 1}
 
     engine_block: dict[str, Any] = {
         "affinity": _node_affinity("engine"),
         "resources": {
-            "requests": {"memory": "28Gi", "cpu": "6000m", "gpu": 1},
-            "limits": {"memory": "40Gi", "cpu": "8000m", "gpu": 1},
+            "requests": engine_requests,
+            "limits": engine_limits,
         },
         "concurrencyLimit": {"activeRequests": None},
         "modelManager": {
@@ -247,6 +289,29 @@ def render_values(
             get_path(config, "deployment", "flux", "model_name", default="flux-general-en")
         )
         engine_block["flux"] = flux_block
+
+    aura2_block: dict[str, Any] | None = None
+    if is_tts:
+        variant_key = str(get_path(config, "deployment", "tts", "variant", default="en")).lower()
+        if variant_key not in AURA2_VARIANTS:
+            raise ValueError(
+                "deployment.tts.variant must be one of "
+                f"{sorted(AURA2_VARIANTS)}; got {variant_key!r}"
+            )
+        variant = AURA2_VARIANTS[variant_key]
+        max_batch_size = int(
+            get_path(config, "deployment", "tts", "max_batch_size", default=8)
+        )
+        aura2_block = {
+            "enabled": True,
+            variant["chart_key"]: {
+                "enabled": True,
+                "maxBatchSize": max_batch_size,
+                "t2cUuid": variant["t2c_uuid"],
+                "c2aUuid": variant["c2a_uuid"],
+                "cudaVisibleDevices": "0,1",
+            },
+        }
 
     document = {
         "global": {
@@ -295,6 +360,17 @@ def render_values(
             "toolkit": {"enabled": False},
         },
     }
+    if aura2_block is not None:
+        document["aura2"] = aura2_block
+    if is_tts:
+        # Aura-2 deployments typically autoscale on TTS request volume; the chart's
+        # prometheus subcharts provide both the metrics pipeline and the custom-metrics
+        # adapter that HPAs read from.
+        document["kube-prometheus-stack"] = {
+            "enabled": True,
+            "fullnameOverride": "dg-prometheus-stack",
+        }
+        document["prometheus-adapter"] = {"enabled": True}
     return yaml.safe_dump(document, sort_keys=False)
 
 
