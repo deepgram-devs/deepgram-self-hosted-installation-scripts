@@ -16,9 +16,11 @@ from deepgram_self_hosted.config import (
     strip_secrets,
     write_config,
 )
-from deepgram_self_hosted.paths import KUBERNETES_AWS_ARTIFACTS_DIR
+from deepgram_self_hosted.paths import artifacts_dir_for
 from deepgram_self_hosted.providers import aws_cli
 from deepgram_self_hosted.providers.kubernetes_aws_workflow import (
+    CLUSTER_CONFIG_FILENAME,
+    HELM_VALUES_FILENAME,
     _role_name,
     ensure_efs_from_config,
     render_cluster_config,
@@ -26,7 +28,10 @@ from deepgram_self_hosted.providers.kubernetes_aws_workflow import (
 )
 from deepgram_self_hosted.runner import command_exists, run
 from deepgram_self_hosted.summary import render_summary
-from deepgram_self_hosted.wizard import edit_field, run_eks_wizard
+from deepgram_self_hosted.wizard import edit_field, run_eks_wizard, validate_name
+
+SESSION_FILENAME = "session.yaml"
+EXPANDED_CLUSTER_CONFIG_FILENAME = "eksctl-expanded-cluster-config.yaml"
 
 SECRET_ENV_VARS: dict[str, str] = {
     "registry_username": "DG_REGISTRY_USERNAME",
@@ -71,13 +76,13 @@ def setup(console: Console, *, config_path: Path | None = None) -> None:
     config_to_save = strip_secrets(config) if secrets_in_memory else config
 
     if on_disk_path is None:
-        default_save = KUBERNETES_AWS_ARTIFACTS_DIR / "session.yaml"
-        save_path_str = questionary.text(
-            "Save config to (used for re-runs and EFS write-back)",
-            default=str(default_save),
-        ).unsafe_ask().strip()
-        on_disk_path = Path(save_path_str) if save_path_str else default_save
+        artifact_dir = _prompt_for_artifact_folder(
+            str(get_path(config, "cluster", "name", default="deepgram-self-hosted-cluster")),
+            console,
+        )
+        on_disk_path = artifact_dir / SESSION_FILENAME
 
+    on_disk_path.parent.mkdir(parents=True, exist_ok=True)
     write_config(on_disk_path, config_to_save)
     console.print(f"Wrote config to [bold]{on_disk_path}[/bold] (mode 0600)")
     if secrets_in_memory:
@@ -91,6 +96,33 @@ def setup(console: Console, *, config_path: Path | None = None) -> None:
         return
 
     _run_native_setup(on_disk_path, console, secrets_override=secrets_in_memory)
+
+
+def _prompt_for_artifact_folder(default_name: str, console: Console) -> Path:
+    """Ask for an artifact-folder name, looping until the user accepts or picks a fresh
+    folder. Defaults to `<artifacts-root>/<cluster-name>`.
+
+    If the resolved folder already exists with files in it, ask for confirmation
+    before overwriting; on decline, re-prompt.
+    """
+    while True:
+        name = questionary.text(
+            "Folder name for deployment artifacts "
+            "(cluster-config, helm-values, session)",
+            default=default_name,
+            validate=validate_name,
+        ).unsafe_ask().strip()
+
+        folder = artifacts_dir_for(name)
+        if folder.exists() and any(folder.iterdir()):
+            overwrite = questionary.confirm(
+                f"Folder {folder} already exists. Overwrite its contents?",
+                default=False,
+            ).unsafe_ask()
+            if not overwrite:
+                console.print("[yellow]Pick a different name.[/yellow]")
+                continue
+        return folder
 
 
 def _summary_loop(config: dict[str, Any], console: Console) -> str:
@@ -136,15 +168,15 @@ def _run_native_setup(
 
     _preflight(console)
 
-    artifact_dir = KUBERNETES_AWS_ARTIFACTS_DIR
+    artifact_dir = config_path.parent
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    cluster_config_path = artifact_dir / "cluster-config.yaml"
+    cluster_config_path = artifact_dir / CLUSTER_CONFIG_FILENAME
     cluster_config_path.write_text(render_cluster_config(config))
     console.print(f"Wrote cluster config to [bold]{cluster_config_path}[/bold]")
 
     if get_path(config, "actions", "dry_run", default=False):
         if get_path(config, "actions", "expanded_eksctl_dry_run", default=False):
-            expanded = artifact_dir / "eksctl-expanded-cluster-config.yaml"
+            expanded = artifact_dir / EXPANDED_CLUSTER_CONFIG_FILENAME
             result = run(
                 ["eksctl", "create", "cluster", "-f", str(cluster_config_path), "--dry-run"]
             )
@@ -211,7 +243,7 @@ def _run_native_setup(
         )
 
     config = load_config(config_path)
-    values_path = artifact_dir / "my-values.yaml"
+    values_path = artifact_dir / HELM_VALUES_FILENAME
     values_path.write_text(render_values(config, resolve_aws=True))
     console.print(f"Wrote Helm values to [bold]{values_path}[/bold]")
 

@@ -1,0 +1,50 @@
+Self-hosting Deepgram services involves a few pieces of authentication,
+running several container images, and exposing necessary config files and models.
+
+Our documentation includes a series of guides that will take you through the steps of
+provisioning hardware, configuring your deployment environment, generating credentials, 
+deploying Deepgram services, and maintaining and scaling your environment. 
+The series of guides start at this link:
+https://developers.deepgram.com/docs/self-hosted-introduction
+
+In the guides, you will be prompted to download models into a models directory. If you already 
+have an existing self-hosted environment, you can download these newly provided models alongside
+your currently deployed models. 
+
+These model files are available for download from Amazon S3 at the following links.
+Files:
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/nova-3-general.en.streaming.40bd3654.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/phoneme.es.4a2fc36c.dg
+  https://deepgram-onprem.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/profanity-filter.a70ceacc.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/diarizer.streaming.6ff6f59c.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/nova-3-general.en.batch.2187e11a.dg
+  https://deepgram-onprem.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/diarizer.batch.a9f85c2b.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/end-of-turn.4e9dbd96.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/flux-general-en.caf79279.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/aura-2.voice-pack.es.c053c7a8.dg
+  https://deepgram-onprem.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/phoneme.en.824ec1be.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/aura-2.generator.es.04355c1e.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/aura-2.generator.en.bdb6b6f3.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/nova-3-general.multi.streaming.421ebff2.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/nova-3-medical.multi.batch.58bc98aa.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/nova-3-general.es.streaming.509be9b5.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/entity-detector.batch.06bc8f36.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/aura-2.voice-pack.en.75d5ec84.dg
+  https://deepgram-onprem.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/sit.80ab3179.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/flux-general-multi.19857d9c.dg
+  https://deepgram-onprem.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/summarizerv2.67875a7f.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/nova-3-general.multi.batch.b6e78fa4.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/nova-3-medical.en.streaming.f70581e5.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/nova-3-general.es.batch.cb233499.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/entity-detector.en.streaming.90424f3a.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/nova-3-medical.en.batch.91d566f5.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/g2p.89555db3.dg
+  https://deepgram-self-hosted.s3.us-east-2.amazonaws.com/35fd69d8-b57a-49eb-9ab1-42fc8fe9fb32/models/language-detector.524a9dcb.dg
+
+To utilize all models/features in this deployment, you must upgrade your Deepgram product images to the `260430` self-hosted release or higher.
+See the Deepgram Changelog (https://deepgram.com/changelog) for a list of all releases (filter by "Self-Hosted").
+
+
+
+To support entity detection, you will need to update your API configuration files.
+See https://deepgram.gitbook.io/help-center/self-hosted/how-can-i-enable-entity-detection-in-my-self-hosted-deployment#updating-your-self-hosted-deployment

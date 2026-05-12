@@ -196,17 +196,17 @@ def test_ensure_mount_targets_creates_once_per_availability_zone(monkeypatch) ->
     assert created == ["fsmt-1", "fsmt-2"]
 
 
-def test_native_setup_dry_run_writes_cluster_config_and_skips_provisioning(
+def test_native_setup_dry_run_writes_cluster_config_into_config_folder(
     tmp_path, monkeypatch
 ) -> None:
     config = default_eks_config()
     config["models"]["urls"] = ["https://example.com/model.dg"]
     config["actions"]["dry_run"] = True
-    config_path = tmp_path / "deployment.yaml"
+    artifact_dir = tmp_path / "smoke-test"
+    artifact_dir.mkdir()
+    config_path = artifact_dir / "session.yaml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
-    artifact_dir = tmp_path / "artifacts"
-    monkeypatch.setattr(kubernetes_aws, "KUBERNETES_AWS_ARTIFACTS_DIR", artifact_dir)
     monkeypatch.setattr(kubernetes_aws, "_preflight", lambda console: None)
 
     def fail_run(*args, **kwargs):
@@ -218,18 +218,19 @@ def test_native_setup_dry_run_writes_cluster_config_and_skips_provisioning(
 
     rendered = yaml.safe_load((artifact_dir / "cluster-config.yaml").read_text())
     assert rendered["metadata"]["name"] == "deepgram-self-hosted-cluster"
-    assert not (artifact_dir / "my-values.yaml").exists()
+    # Helm values are only rendered post-EFS in a real deploy.
+    assert not (artifact_dir / "helm-values.yaml").exists()
 
 
 def test_native_setup_aborts_when_actions_continue_is_false(tmp_path, monkeypatch) -> None:
     config = default_eks_config()
     config["models"]["urls"] = ["https://example.com/model.dg"]
     config["actions"]["continue"] = False
-    config_path = tmp_path / "deployment.yaml"
+    artifact_dir = tmp_path / "abort-cluster"
+    artifact_dir.mkdir()
+    config_path = artifact_dir / "session.yaml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
-    artifact_dir = tmp_path / "artifacts"
-    monkeypatch.setattr(kubernetes_aws, "KUBERNETES_AWS_ARTIFACTS_DIR", artifact_dir)
     monkeypatch.setattr(kubernetes_aws, "_preflight", lambda console: None)
 
     def fail_run(*args, **kwargs):
@@ -240,7 +241,7 @@ def test_native_setup_aborts_when_actions_continue_is_false(tmp_path, monkeypatc
     kubernetes_aws._run_native_setup(config_path, _QuietConsole())
 
     assert (artifact_dir / "cluster-config.yaml").exists()
-    assert not (artifact_dir / "my-values.yaml").exists()
+    assert not (artifact_dir / "helm-values.yaml").exists()
 
 
 def test_render_values_allows_empty_models_when_reusing_efs() -> None:
@@ -414,3 +415,116 @@ def test_run_returns_failed_result_when_command_is_missing() -> None:
     assert result.returncode == 127
     assert not result.ok
     assert result.stderr == "definitely-not-a-real-deepgram-cli not found on PATH"
+
+
+def test_validate_name_accepts_safe_characters() -> None:
+    from deepgram_self_hosted.wizard import validate_name
+
+    assert validate_name("hughes-va1") is True
+    assert validate_name("simple") is True
+    assert validate_name("with.dots_and-hyphens") is True
+    assert validate_name("123-starts-with-digit") is True
+
+
+def test_validate_name_rejects_unsafe_characters() -> None:
+    from deepgram_self_hosted.wizard import validate_name
+
+    assert validate_name("") != True  # noqa: E712 — message string, not False
+    assert validate_name("   ") != True  # noqa: E712
+    assert validate_name("has spaces") != True  # noqa: E712
+    assert validate_name("path/separator") != True  # noqa: E712
+    assert validate_name("bad*char") != True  # noqa: E712
+
+
+def test_prompt_for_artifact_folder_returns_default_when_unused(tmp_path, monkeypatch) -> None:
+    from deepgram_self_hosted.providers import kubernetes_aws as ka
+
+    asked_text: list[str] = []
+    asked_confirm: list[str] = []
+
+    class _Text:
+        def __init__(self, value: str):
+            self._value = value
+
+        def unsafe_ask(self) -> str:
+            return self._value
+
+    def fake_text(message, default=None, validate=None):
+        asked_text.append(message)
+        return _Text(default)
+
+    monkeypatch.setattr(ka.questionary, "text", fake_text)
+    monkeypatch.setattr(
+        ka.questionary,
+        "confirm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not be asked")),
+    )
+    # Cluster name "new-cluster" => default folder doesn't exist => no confirm.
+    monkeypatch.setattr(ka, "artifacts_dir_for", lambda name: tmp_path / name)
+
+    folder = ka._prompt_for_artifact_folder("new-cluster", _QuietConsole())
+    assert folder == tmp_path / "new-cluster"
+    assert len(asked_text) == 1
+    assert asked_confirm == []
+
+
+def test_prompt_for_artifact_folder_re_prompts_when_overwrite_declined(
+    tmp_path, monkeypatch
+) -> None:
+    from deepgram_self_hosted.providers import kubernetes_aws as ka
+
+    # First-pass folder exists with content -> overwrite asked.
+    existing = tmp_path / "old-cluster"
+    existing.mkdir()
+    (existing / "stale.yaml").write_text("old")
+    fresh = tmp_path / "fresh-cluster"
+
+    name_responses = iter(["old-cluster", "fresh-cluster"])
+    confirm_responses = iter([False])
+
+    class _Stub:
+        def __init__(self, value):
+            self._value = value
+
+        def unsafe_ask(self):
+            return self._value
+
+    monkeypatch.setattr(
+        ka.questionary,
+        "text",
+        lambda *args, **kwargs: _Stub(next(name_responses)),
+    )
+    monkeypatch.setattr(
+        ka.questionary,
+        "confirm",
+        lambda *args, **kwargs: _Stub(next(confirm_responses)),
+    )
+    monkeypatch.setattr(ka, "artifacts_dir_for", lambda name: tmp_path / name)
+
+    folder = ka._prompt_for_artifact_folder("old-cluster", _QuietConsole())
+    assert folder == fresh
+    # Re-prompted: two text calls, one confirm.
+    assert list(name_responses) == []
+    assert list(confirm_responses) == []
+
+
+def test_prompt_for_artifact_folder_accepts_overwrite(tmp_path, monkeypatch) -> None:
+    from deepgram_self_hosted.providers import kubernetes_aws as ka
+
+    existing = tmp_path / "reuse"
+    existing.mkdir()
+    (existing / "stale.yaml").write_text("old")
+
+    class _Stub:
+        def __init__(self, value):
+            self._value = value
+
+        def unsafe_ask(self):
+            return self._value
+
+    monkeypatch.setattr(ka.questionary, "text", lambda *args, **kwargs: _Stub("reuse"))
+    monkeypatch.setattr(ka.questionary, "confirm", lambda *args, **kwargs: _Stub(True))
+    monkeypatch.setattr(ka, "artifacts_dir_for", lambda name: tmp_path / name)
+
+    folder = ka._prompt_for_artifact_folder("reuse", _QuietConsole())
+    assert folder == existing

@@ -6,6 +6,7 @@ straight to `_run_native_setup` (after writing to disk).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import questionary
@@ -14,6 +15,21 @@ from deepgram_self_hosted.config import default_eks_config, get_path
 
 OTHER = "Other (enter custom)"
 DEFAULT_TAG = " (default)"
+
+# Used for cluster name and artifact folder name. A subset of AWS EKS naming
+# (alphanumeric + `-`) that is also filename-safe on Linux/macOS/Windows.
+NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+NAME_HINT = "Use letters, digits, '.', '-', or '_' only."
+
+
+def validate_name(value: str) -> bool | str:
+    """Questionary validator for cluster/folder names."""
+    stripped = value.strip()
+    if not stripped:
+        return "Required."
+    if not NAME_PATTERN.fullmatch(stripped):
+        return NAME_HINT
+    return True
 
 REGIONS = [
     "us-west-1", "us-west-2", "us-east-1", "us-east-2",
@@ -109,7 +125,9 @@ def run_eks_wizard() -> dict[str, Any]:
     config = default_eks_config()
 
     config["cluster"]["name"] = questionary.text(
-        "Cluster name", default=config["cluster"]["name"]
+        "Cluster name",
+        default=config["cluster"]["name"],
+        validate=validate_name,
     ).unsafe_ask().strip()
     config["cluster"]["region"] = _select_with_other(
         "AWS region", REGIONS, config["cluster"]["region"]

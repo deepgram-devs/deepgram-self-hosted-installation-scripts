@@ -5,13 +5,13 @@ Interactive wizard for running Deepgram self-hosted services on AWS EKS, driven 
 ## What This Workflow Does
 
 - Collects deployment options interactively (or loads a saved YAML config)
-- Renders a Deepgram-style `eksctl` cluster config to `artifacts/cluster-config.yaml`
+- Renders a Deepgram-style `eksctl` cluster config to `artifacts/<folder>/cluster-config.yaml`
 - Optionally creates the EKS cluster via `eksctl create cluster`
 - Creates or reuses encrypted EFS storage, ensures NFS ingress, and creates missing mount targets per AZ
 - Installs the EFS CSI driver addon using the IAM role that `eksctl` provisioned
 - Creates the `dg-self-hosted` namespace
 - Creates Kubernetes secrets in-cluster (only if you opt in; credentials are not written to disk)
-- Renders Helm values to `artifacts/my-values.yaml`
+- Renders Helm values to `artifacts/<folder>/helm-values.yaml`
 - Installs or upgrades the Deepgram self-hosted Helm chart
 
 ## Requirements
@@ -66,8 +66,8 @@ After the wizard collects answers, the summary screen renders three Rich tables 
 
 Before deploy, the (possibly edited) config is written to disk:
 
-- With `--config X`, back to the same path.
-- Without `--config`, the wizard prompts for a save path defaulting to `kubernetes/aws/artifacts/session.yaml`.
+- With `--config X`, back to the same path. Rendered `cluster-config.yaml` and `helm-values.yaml` land next to it (in `Path(X).parent`).
+- Without `--config`, the wizard asks for a folder name (defaulting to the cluster name) and creates `kubernetes/aws/artifacts/<folder>/` with `session.yaml`, `cluster-config.yaml`, and `helm-values.yaml` inside. If the folder already exists with files in it, you'll be asked to confirm before overwriting.
 
 Every saved config is written with file mode `0600` (owner-only).
 
@@ -78,11 +78,12 @@ Two ways to enable it:
 1. From the wizard, answer **yes** to `Dry run (write artifacts only, do not provision)?`. The summary's primary action becomes **Render artifacts (dry run)**.
 2. From a saved config, set `actions.dry_run: true` and run `setup kubernetes aws --config X`.
 
-Generated files are written under `kubernetes/aws/artifacts/`:
+Generated files are written under `kubernetes/aws/artifacts/<folder>/`:
 
-- `artifacts/cluster-config.yaml` — Deepgram-style `eksctl` cluster config
-- `artifacts/eksctl-expanded-cluster-config.yaml` — optional expanded `eksctl --dry-run` output (set `actions.expanded_eksctl_dry_run: true` in the config to write this)
-- `artifacts/my-values.yaml` — Helm values, only written after EFS provisioning succeeds (so it's absent in dry-run mode)
+- `cluster-config.yaml` — Deepgram-style `eksctl` cluster config
+- `eksctl-expanded-cluster-config.yaml` — optional expanded `eksctl --dry-run` output (set `actions.expanded_eksctl_dry_run: true` in the config to write this)
+- `helm-values.yaml` — Helm values, only written after EFS provisioning succeeds (so it's absent in dry-run mode)
+- `session.yaml` — the wizard's saved config (driver YAML for re-runs)
 
 ## Full Deployment
 
@@ -92,7 +93,7 @@ Equivalent Helm command if you want to apply the rendered values manually:
 
 ```bash
 helm install deepgram deepgram/deepgram-self-hosted \
-  -f artifacts/my-values.yaml \
+  -f artifacts/<folder>/helm-values.yaml \
   --namespace dg-self-hosted \
   --atomic \
   --timeout 1h
@@ -131,14 +132,14 @@ Resolution order at deploy time: in-memory wizard input → env vars → values 
 ### Dry run shows extra fields
 
 Symptom:
-- `artifacts/eksctl-expanded-cluster-config.yaml` contains many defaults that are not present in Deepgram's sample config
+- `artifacts/<folder>/eksctl-expanded-cluster-config.yaml` contains many defaults that are not present in Deepgram's sample config
 
 Cause:
 - `eksctl create cluster --dry-run` normalizes and expands defaults. This is expected.
 
 Fix:
-- Compare Deepgram-style input against `artifacts/cluster-config.yaml`
-- Use `artifacts/eksctl-expanded-cluster-config.yaml` only to inspect what `eksctl` will derive internally
+- Compare Deepgram-style input against `artifacts/<folder>/cluster-config.yaml`
+- Use `artifacts/<folder>/eksctl-expanded-cluster-config.yaml` only to inspect what `eksctl` will derive internally
 
 ### EFS CSI addon role missing
 
@@ -147,7 +148,7 @@ Symptom:
 - Error mentions an EFS CSI IAM role
 
 Checks:
-- The cluster was created from `artifacts/cluster-config.yaml`
+- The cluster was created from `artifacts/<folder>/cluster-config.yaml`
 - `eksctl` successfully created IAM service accounts
 - AWS IAM contains the cluster-scoped EFS CSI role printed in the script summary, for example `<cluster-name>-efs-csi-driver-role`
 
