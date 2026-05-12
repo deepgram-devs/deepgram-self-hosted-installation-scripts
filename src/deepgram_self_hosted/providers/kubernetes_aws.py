@@ -9,7 +9,9 @@ import questionary
 from rich.console import Console
 
 from deepgram_self_hosted.config import (
+    LLM_PROVIDER_SECRET_REF_FIELDS,
     SECRET_KEYS,
+    extract_llm_provider_api_keys,
     extract_secrets,
     get_path,
     load_config,
@@ -32,6 +34,16 @@ SECRET_ENV_VARS: dict[str, str] = {
     "registry_username": "DG_REGISTRY_USERNAME",
     "registry_password": "DG_REGISTRY_PASSWORD",
     "api_key": "DG_API_KEY",
+}
+
+LLM_PROVIDER_ENV_VARS: dict[str, str] = {
+    "openai": "DG_OPENAI_API_KEY",
+    "anthropic": "DG_ANTHROPIC_API_KEY",
+    "groq": "DG_GROQ_API_KEY",
+    "elevenlabs": "DG_ELEVENLABS_API_KEY",
+    "cartesia": "DG_CARTESIA_API_KEY",
+    "xai": "DG_XAI_API_KEY",
+    "google": "DG_GOOGLE_API_KEY",
 }
 
 DEFAULT_NAMESPACE = "dg-self-hosted"
@@ -68,7 +80,12 @@ def setup(console: Console, *, config_path: Path | None = None) -> None:
     secrets_in_memory = (
         extract_secrets(config) if secrets_mode == "create" else None
     )
-    config_to_save = strip_secrets(config) if secrets_in_memory else config
+    llm_api_keys_in_memory = (
+        extract_llm_provider_api_keys(config) if secrets_mode == "create" else None
+    )
+    config_to_save = (
+        strip_secrets(config) if secrets_in_memory or llm_api_keys_in_memory else config
+    )
 
     if on_disk_path is None:
         default_save = KUBERNETES_AWS_ARTIFACTS_DIR / "session.yaml"
@@ -90,7 +107,12 @@ def setup(console: Console, *, config_path: Path | None = None) -> None:
     if decision == "save":
         return
 
-    _run_native_setup(on_disk_path, console, secrets_override=secrets_in_memory)
+    _run_native_setup(
+        on_disk_path,
+        console,
+        secrets_override=secrets_in_memory,
+        llm_api_keys_override=llm_api_keys_in_memory,
+    )
 
 
 def _summary_loop(config: dict[str, Any], console: Console) -> str:
@@ -129,6 +151,7 @@ def _run_native_setup(
     console: Console,
     *,
     secrets_override: dict[str, Any] | None = None,
+    llm_api_keys_override: dict[str, str | None] | None = None,
 ) -> None:
     config = load_config(config_path)
     cluster_name = str(get_path(config, "cluster", "name", default="deepgram-self-hosted-cluster"))
@@ -143,6 +166,12 @@ def _run_native_setup(
     console.print(f"Wrote cluster config to [bold]{cluster_config_path}[/bold]")
 
     if get_path(config, "actions", "dry_run", default=False):
+        # Render Helm values too so users can diff against the upstream chart
+        # sample without doing a full deploy. EFS ID and role ARN remain at
+        # their placeholder values (rendered offline).
+        values_path = artifact_dir / "my-values.yaml"
+        values_path.write_text(render_values(config, resolve_aws=False))
+        console.print(f"Wrote Helm values to [bold]{values_path}[/bold]")
         if get_path(config, "actions", "expanded_eksctl_dry_run", default=False):
             expanded = artifact_dir / "eksctl-expanded-cluster-config.yaml"
             result = run(
@@ -204,6 +233,8 @@ def _run_native_setup(
     if secrets_mode == "create":
         creds = _resolve_secrets(config, secrets_override)
         _create_secrets(creds, DEFAULT_NAMESPACE, console)
+        llm_creds = _resolve_llm_provider_secrets(config, llm_api_keys_override)
+        _create_llm_provider_secrets(config, llm_creds, DEFAULT_NAMESPACE, console)
     else:
         console.print(
             f"[yellow]Skipping secret creation; ensure dg-regcred and "
@@ -247,6 +278,30 @@ def _resolve_secrets(
     }
 
 
+def _resolve_llm_provider_secrets(
+    config: dict[str, Any],
+    llm_api_keys_override: dict[str, str | None] | None,
+) -> dict[str, str | None]:
+    """Resolve LLM provider API keys for each provider listed in third_party_credentials.
+
+    Same precedence as _resolve_secrets: (1) in-memory override, (2) env var,
+    (3) value remaining in config file.
+    """
+    providers = list((get_path(config, "third_party_credentials", default={}) or {}).keys())
+    resolved: dict[str, str | None] = {}
+    for provider in providers:
+        if llm_api_keys_override and llm_api_keys_override.get(provider):
+            resolved[provider] = llm_api_keys_override[provider]
+            continue
+        env_var = LLM_PROVIDER_ENV_VARS.get(provider)
+        env_value = os.environ.get(env_var) if env_var else None
+        config_value = get_path(
+            config, "secrets", "llm_provider_api_keys", provider
+        )
+        resolved[provider] = env_value or config_value
+    return resolved
+
+
 def _create_secrets(
     creds: dict[str, str | None],
     namespace: str,
@@ -282,6 +337,38 @@ def _create_secrets(
             "--namespace", namespace,
         ],
     )
+
+
+def _create_llm_provider_secrets(
+    config: dict[str, Any],
+    creds: dict[str, str | None],
+    namespace: str,
+    console: Console,
+) -> None:
+    """Create one generic K8s secret per enabled LLM provider when mode=create."""
+    refs = get_path(config, "third_party_credentials", default={}) or {}
+    if not refs:
+        return
+
+    for provider, secret_ref in refs.items():
+        if provider not in LLM_PROVIDER_SECRET_REF_FIELDS:
+            continue
+        api_key = creds.get(provider)
+        if not api_key:
+            env_var = LLM_PROVIDER_ENV_VARS.get(provider, "")
+            raise ValueError(
+                f"LLM provider `{provider}` is enabled but its API key is missing. "
+                f"Re-run the wizard interactively or set {env_var} before deploying."
+            )
+
+        console.print(f"Creating LLM provider secret [bold]{secret_ref}[/bold]...")
+        _kubectl_create_or_replace(
+            [
+                "kubectl", "create", "secret", "generic", str(secret_ref),
+                f"--from-literal=API_KEY={api_key}",
+                "--namespace", namespace,
+            ],
+        )
 
 
 def _kubectl_create_or_replace(create_command: list[str]) -> None:

@@ -12,7 +12,7 @@ from deepgram_self_hosted.config import get_path
 
 NODE_GROUPS: list[tuple[str, str, str]] = [
     ("control_plane", "Control plane", "t3.large"),
-    ("engine", "Engine (GPU)", "g6.2xlarge"),
+    ("engine", "Engine", "g6.2xlarge"),
     ("api", "API", "c5n.xlarge"),
 ]
 
@@ -81,6 +81,37 @@ def _other_table(config: dict[str, Any]) -> Table:
         table.add_row("Models", f"{len(urls)} URL(s)")
     else:
         table.add_row("Models", "use models already on EFS")
+
+    if str(get_path(config, "deployment", "type", default="STT")).upper() == "VOICE_AGENT":
+        agent_replicas = (
+            get_path(config, "node_groups", "engine", "agent_replicas", default={}) or {}
+        )
+        if agent_replicas:
+            table.add_row(
+                "Agent replicas",
+                ", ".join(f"{key}={value}" for key, value in agent_replicas.items()),
+            )
+
+        languages = [
+            lang for lang in ("english", "spanish", "polyglot")
+            if get_path(config, "aura2", lang, "enabled", default=False)
+        ]
+        aura2_enabled = bool(get_path(config, "aura2", "enabled", default=False))
+        if aura2_enabled:
+            table.add_row(
+                "Aura-2",
+                ", ".join(languages) if languages else "enabled (no languages)",
+            )
+        else:
+            table.add_row("Aura-2", "disabled")
+
+        providers = list(
+            (get_path(config, "third_party_credentials", default={}) or {}).keys()
+        )
+        table.add_row(
+            "LLM providers",
+            ", ".join(sorted(providers)) if providers else "none",
+        )
 
     table.add_row(
         "Dry run",

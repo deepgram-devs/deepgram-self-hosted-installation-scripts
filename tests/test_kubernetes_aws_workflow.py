@@ -218,7 +218,13 @@ def test_native_setup_dry_run_writes_cluster_config_and_skips_provisioning(
 
     rendered = yaml.safe_load((artifact_dir / "cluster-config.yaml").read_text())
     assert rendered["metadata"]["name"] == "deepgram-self-hosted-cluster"
-    assert not (artifact_dir / "my-values.yaml").exists()
+    # Dry run also writes Helm values so users can diff against the upstream
+    # chart sample without deploying.
+    assert (artifact_dir / "my-values.yaml").exists()
+    values = yaml.safe_load((artifact_dir / "my-values.yaml").read_text())
+    assert values["engine"]["modelManager"]["models"]["add"] == [
+        "https://example.com/model.dg"
+    ]
 
 
 def test_native_setup_aborts_when_actions_continue_is_false(tmp_path, monkeypatch) -> None:
@@ -414,3 +420,193 @@ def test_run_returns_failed_result_when_command_is_missing() -> None:
     assert result.returncode == 127
     assert not result.ok
     assert result.stderr == "definitely-not-a-real-deepgram-cli not found on PATH"
+
+
+def _voice_agent_config() -> dict:
+    config = default_eks_config()
+    config["deployment"]["type"] = "VOICE_AGENT"
+    config["efs"]["file_system_id"] = "fs-voice-agent"
+    config["models"]["urls"] = ["https://example.com/eot.dg"]
+    config["aura2"]["enabled"] = True
+    config["aura2"]["english"]["enabled"] = True
+    return config
+
+
+def test_render_values_voice_agent_emits_agent_block_and_dict_engine_replicas() -> None:
+    config = _voice_agent_config()
+    config["node_groups"]["engine"]["agent_replicas"] = {
+        "agent-speech-to-text": 2,
+        "agent-text-to-speech": 3,
+        "agent-end-of-turn": 1,
+    }
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert rendered["agent"]["enabled"] is True
+    assert rendered["scaling"]["replicas"]["engine"] == {
+        "agent-speech-to-text": 2,
+        "agent-text-to-speech": 3,
+        "agent-end-of-turn": 1,
+    }
+    # Cluster autoscaler is forced off for Voice Agent.
+    assert rendered["cluster-autoscaler"]["enabled"] is False
+    # Aura-2 English appears with vendored UUIDs.
+    assert rendered["aura2"]["enabled"] is True
+    assert rendered["aura2"]["english"]["enabled"] is True
+    assert rendered["aura2"]["english"]["t2cUuid"]
+    assert rendered["aura2"]["english"]["c2aUuid"]
+
+
+def test_render_values_stt_still_emits_scalar_engine_replicas_and_agent_disabled() -> None:
+    config = default_eks_config()
+    config["efs"]["file_system_id"] = "fs-stt"
+    config["models"]["urls"] = ["https://example.com/nova.dg"]
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert rendered["agent"]["enabled"] is False
+    assert isinstance(rendered["scaling"]["replicas"]["engine"], int)
+    assert rendered["cluster-autoscaler"]["enabled"] is True
+    assert "aura2" not in rendered
+
+
+def test_render_values_voice_agent_emits_third_party_credentials() -> None:
+    config = _voice_agent_config()
+    config["third_party_credentials"] = {
+        "openai": "openai-api-key",
+        "anthropic": "anthropic-api-key",
+    }
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    third_party = rendered["global"]["thirdPartyCredentials"]
+    assert third_party["openAiSecretRef"] == "openai-api-key"
+    assert third_party["anthropicSecretRef"] == "anthropic-api-key"
+
+
+def test_render_values_skips_aura2_when_disabled() -> None:
+    config = _voice_agent_config()
+    config["aura2"]["enabled"] = False
+
+    rendered = yaml.safe_load(
+        render_values(config, cluster_autoscaler_role_arn="arn:aws:iam::123:role/x")
+    )
+
+    assert "aura2" not in rendered
+
+
+def test_strip_secrets_nulls_llm_provider_api_keys() -> None:
+    config = default_eks_config()
+    config["secrets"]["mode"] = "create"
+    config["secrets"]["llm_provider_api_keys"] = {
+        "openai": "sk-secret",
+        "anthropic": "ant-secret",
+    }
+
+    sanitized = strip_secrets(config)
+
+    assert sanitized["secrets"]["llm_provider_api_keys"] == {
+        "openai": None,
+        "anthropic": None,
+    }
+    # Original untouched.
+    assert config["secrets"]["llm_provider_api_keys"]["openai"] == "sk-secret"
+
+
+def test_resolve_llm_provider_secrets_prefers_override(monkeypatch) -> None:
+    monkeypatch.delenv("DG_OPENAI_API_KEY", raising=False)
+    config = {
+        "third_party_credentials": {"openai": "openai-api-key"},
+        "secrets": {"llm_provider_api_keys": {"openai": "config-value"}},
+    }
+
+    creds = kubernetes_aws._resolve_llm_provider_secrets(
+        config, {"openai": "override-value"}
+    )
+
+    assert creds == {"openai": "override-value"}
+
+
+def test_resolve_llm_provider_secrets_falls_back_to_env_then_config(monkeypatch) -> None:
+    monkeypatch.setenv("DG_OPENAI_API_KEY", "env-value")
+    monkeypatch.delenv("DG_ANTHROPIC_API_KEY", raising=False)
+    config = {
+        "third_party_credentials": {
+            "openai": "openai-api-key",
+            "anthropic": "anthropic-api-key",
+        },
+        "secrets": {
+            "llm_provider_api_keys": {
+                "openai": "config-value",
+                "anthropic": "anthropic-config",
+            }
+        },
+    }
+
+    creds = kubernetes_aws._resolve_llm_provider_secrets(config, llm_api_keys_override=None)
+
+    assert creds["openai"] == "env-value"
+    assert creds["anthropic"] == "anthropic-config"
+
+
+def test_voice_agent_defaults_match_chart_sample_sizing() -> None:
+    """After _apply_voice_agent_defaults, cluster-config sizing should match
+    Deepgram's 05-voice-agent-aws.cluster-config.yaml sample."""
+    from deepgram_self_hosted.wizard import _apply_voice_agent_defaults
+
+    config = default_eks_config()
+    config["deployment"]["type"] = "VOICE_AGENT"
+    config["license_proxy"]["enabled"] = True
+    _apply_voice_agent_defaults(config)
+
+    rendered = yaml.safe_load(render_cluster_config(config))
+    by_name = {group["name"]: group for group in rendered["managedNodeGroups"]}
+
+    engine = by_name["engine-node-group"]
+    assert engine["minSize"] == 3
+    assert engine["desiredCapacity"] == 3
+    assert engine["maxSize"] == 8
+    assert engine["instanceType"] == "g6.12xlarge"
+
+    license_proxy = by_name["license-proxy-node-group"]
+    assert license_proxy["minSize"] == 1
+    assert license_proxy["desiredCapacity"] == 1
+    assert license_proxy["maxSize"] == 2
+
+
+def test_voice_agent_defaults_preserve_user_overrides() -> None:
+    """User overrides survive _apply_voice_agent_defaults."""
+    from deepgram_self_hosted.wizard import _apply_voice_agent_defaults
+
+    config = default_eks_config()
+    config["deployment"]["type"] = "VOICE_AGENT"
+    config["node_groups"]["engine"]["min"] = 2
+    config["node_groups"]["engine"]["desired"] = 4
+    config["node_groups"]["engine"]["instance_type"] = "g5.12xlarge"
+    config["node_groups"]["license_proxy"]["min"] = 2
+    config["node_groups"]["license_proxy"]["desired"] = 2
+
+    _apply_voice_agent_defaults(config)
+
+    assert config["node_groups"]["engine"]["min"] == 2
+    assert config["node_groups"]["engine"]["desired"] == 4
+    assert config["node_groups"]["engine"]["instance_type"] == "g5.12xlarge"
+    assert config["node_groups"]["license_proxy"]["min"] == 2
+    assert config["node_groups"]["license_proxy"]["desired"] == 2
+
+
+def test_create_llm_provider_secrets_raises_when_key_missing() -> None:
+    config = {"third_party_credentials": {"openai": "openai-api-key"}}
+    with pytest.raises(ValueError, match="openai"):
+        kubernetes_aws._create_llm_provider_secrets(
+            config,
+            {"openai": None},
+            "dg-self-hosted",
+            _QuietConsole(),
+        )

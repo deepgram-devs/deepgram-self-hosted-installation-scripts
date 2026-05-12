@@ -45,16 +45,19 @@ The wizard collects, in order:
 1. Cluster name (text)
 2. AWS region (dropdown with `(default)` markers + `Other (enter custom)`)
 3. Kubernetes version (dropdown)
-4. Deployment type (`STT` or `TTS`)
-5. Service exposure type (`ClusterIP`, `LoadBalancer`, or `NodePort`)
-6. Per-node-group settings for **Control plane**, **Engine (GPU)**, and **API**:
-   - Instance type (curated dropdown — engine list is GPU instances; control-plane and API have their own curated lists; each supports `Other`)
+4. Deployment type (`STT`, `TTS`, or `VOICE_AGENT`)
+5. If `VOICE_AGENT`: Aura-2 TTS toggle + per-language opt-in (English / Spanish / Polyglot) with editable `t2cUuid` / `c2aUuid` / `cudaVisibleDevices` defaults
+6. Service exposure type (`ClusterIP`, `LoadBalancer`, or `NodePort`)
+7. Per-node-group settings for **Control plane**, **Engine**, and **API**:
+   - Instance type (curated dropdown — engine list is GPU instances; control-plane and API have their own curated lists; each supports `Other`). When `VOICE_AGENT` + Aura-2 is selected, the engine dropdown is filtered to multi-GPU instances (e.g. `g6.12xlarge`).
    - Min / desired / max size (integer validators)
-7. License Proxy enable + (if enabled) its node-group settings
-8. EFS storage mode — `Create new EFS` or `Use existing EFS` (existing requires a non-empty `fs-...` ID)
-9. Model URL source — `Enter URLs manually`, `Load from deployment .txt file`, or (only when EFS is existing) `Skip (use models already on EFS)`
-10. Kubernetes secrets mode — `Use external secret store` (default) or `Create in-cluster secrets`
-11. Dry run toggle
+8. If `VOICE_AGENT`: per-pool engine replica counts for `agent-speech-to-text`, `agent-text-to-speech`, `agent-end-of-turn`
+9. License Proxy enable + (if enabled) its node-group settings
+10. EFS storage mode — `Create new EFS` or `Use existing EFS` (existing requires a non-empty `fs-...` ID)
+11. Model URL source — `Enter URLs manually`, `Load from deployment .txt file`, or (only when EFS is existing) `Skip (use models already on EFS)`
+12. Kubernetes secrets mode — `Use external secret store` (default) or `Create in-cluster secrets`
+13. If `VOICE_AGENT`: LLM provider credentials — one entry per line in the form `provider=secret-ref` (provider one of `openai`, `anthropic`, `groq`, `elevenlabs`, `cartesia`, `xai`, `google`). When secrets mode is `create`, you'll also be prompted (password input) for each provider's API key.
+14. Dry run toggle
 
 After the wizard collects answers, the summary screen renders three Rich tables (Cluster / Node groups / Other) and shows a four-way menu:
 
@@ -118,6 +121,35 @@ uv run dg-self-hosted setup kubernetes aws --config deployments/stt-2.yaml
 ```
 
 Resolution order at deploy time: in-memory wizard input → env vars → values in the YAML. If none of those provide all three, the deploy aborts with a message naming the env vars.
+
+For Voice Agent LLM provider credentials, the same in-memory / env / config precedence applies, per provider. Env vars:
+
+```bash
+export DG_OPENAI_API_KEY=...
+export DG_ANTHROPIC_API_KEY=...
+export DG_GROQ_API_KEY=...
+export DG_ELEVENLABS_API_KEY=...
+export DG_CARTESIA_API_KEY=...
+export DG_XAI_API_KEY=...
+export DG_GOOGLE_API_KEY=...
+```
+
+## Voice Agent
+
+When `deployment.type` is `VOICE_AGENT`, the wizard and renderer diverge from STT/TTS:
+
+- `agent.enabled: true` in the rendered Helm values.
+- `scaling.replicas.engine` becomes a dict with `agent-speech-to-text`, `agent-text-to-speech`, and `agent-end-of-turn` keys (matching Deepgram's [voice agent AWS chart sample](https://github.com/deepgram/self-hosted-resources/blob/main/charts/deepgram-self-hosted/samples/05-voice-agent-aws.values.yaml)).
+- `cluster-autoscaler.enabled` is forced to `false`. Autoscaling is not yet supported for Voice Agent upstream.
+- The wizard offers Aura-2 TTS per language (English, Spanish, Polyglot). UUID defaults are vendored from the chart sample above. If Deepgram rotates the UUIDs in a model release, refresh them with:
+
+  ```bash
+  kubectl logs -l engine-type=agent-text-to-speech -n dg-self-hosted | head -100
+  ```
+
+  Look for lines `Inserting model key=TtsKey { ... uuid: ... }` (→ `t2cUuid`) and `Inserting model key=Codes2AudioKey { ... uuid: ... }` (→ `c2aUuid`). Edit the values in the saved config and redeploy.
+
+- LLM provider credentials are collected line-by-line. Each entry yields a corresponding `global.thirdPartyCredentials.*SecretRef` field in the rendered values. When `secrets.mode == create`, the wizard also collects each provider's API key (in memory only) and creates one generic K8s secret per provider at deploy time.
 
 ## Prompt Tips
 

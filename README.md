@@ -66,6 +66,8 @@ The Kubernetes/AWS workflow runs natively in Python — it shells out to `aws`, 
 
 `setup kubernetes aws` (no `--config`) opens an interactive Questionary wizard with curated dropdowns for region, Kubernetes version, and per-node-group instance type (engine GPU instances, API c5n family, general-purpose for control-plane and license-proxy). Each dropdown shows `(default)` next to the suggested value and offers an `Other (enter custom)` entry for off-list values. Required fields (Quay credentials, API key, existing-EFS ID, deployment-file path) are enforced with non-empty validators.
 
+Deployment types: `STT`, `TTS`, and `VOICE_AGENT` (which runs STT + TTS + end-of-turn engines together). Picking `VOICE_AGENT` unlocks extra prompts for Aura-2 TTS, per-pool engine replica counts, and LLM provider K8s secret refs. See [Voice Agent docs](kubernetes/aws/README.md#voice-agent) for details.
+
 After the wizard collects answers it shows a Rich summary table (Cluster / Node groups / Other) and a four-way menu:
 
 - **Deploy** — write the config to disk and run the full deployment. When `Dry run` is on, this option is renamed to **Render artifacts (dry run)**.

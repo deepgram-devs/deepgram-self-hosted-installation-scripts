@@ -7,7 +7,13 @@ from typing import Any
 import yaml
 from rich.console import Console
 
-from deepgram_self_hosted.config import get_path, load_config, write_config
+from deepgram_self_hosted.config import (
+    LLM_PROVIDER_SECRET_REF_FIELDS,
+    VOICE_AGENT_ENGINE_REPLICA_KEYS,
+    get_path,
+    load_config,
+    write_config,
+)
 from deepgram_self_hosted.providers import aws_cli
 
 
@@ -203,19 +209,39 @@ def render_values(
             "Run prepare efs kubernetes aws first."
         )
 
-    document = {
-        "global": {
-            "pullSecretRef": "dg-regcred",
-            "deepgramSecretRef": "dg-self-hosted-api-key",
-        },
+    deployment_type = str(get_path(config, "deployment", "type", default="STT")).upper()
+    is_voice_agent = deployment_type == "VOICE_AGENT"
+
+    global_block: dict[str, Any] = {
+        "pullSecretRef": "dg-regcred",
+        "deepgramSecretRef": "dg-self-hosted-api-key",
+    }
+    third_party = _third_party_credentials(config)
+    if third_party:
+        global_block["thirdPartyCredentials"] = third_party
+
+    engine_replicas: Any = (
+        _engine_replicas_dict(config)
+        if is_voice_agent
+        else _node_size(config, "engine", "desired", 1)
+    )
+
+    autoscaler_enabled = (
+        False
+        if is_voice_agent
+        else bool(get_path(config, "cluster_autoscaler", "enabled", default=True))
+    )
+
+    document: dict[str, Any] = {
+        "global": global_block,
         "scaling": {
             "replicas": {
                 "api": _node_size(config, "api", "desired", 1),
-                "engine": _node_size(config, "engine", "desired", 1),
+                "engine": engine_replicas,
             },
             "auto": {"enabled": False},
         },
-        "agent": {"enabled": False},
+        "agent": {"enabled": is_voice_agent},
         "api": {
             "affinity": _node_affinity("api"),
             "resources": {
@@ -254,9 +280,7 @@ def render_values(
             "service": {"type": service_type},
         },
         "cluster-autoscaler": {
-            "enabled": bool(
-                get_path(config, "cluster_autoscaler", "enabled", default=True)
-            ),
+            "enabled": autoscaler_enabled,
             "rbac": {
                 "serviceAccount": {
                     "name": "cluster-autoscaler-sa",
@@ -276,7 +300,52 @@ def render_values(
             "toolkit": {"enabled": False},
         },
     }
+
+    aura2_block = _aura2_block(config) if is_voice_agent else None
+    if aura2_block is not None:
+        document["aura2"] = aura2_block
+
     return yaml.safe_dump(document, sort_keys=False)
+
+
+def _engine_replicas_dict(config: dict[str, Any]) -> dict[str, int]:
+    overrides = get_path(config, "node_groups", "engine", "agent_replicas", default={}) or {}
+    return {
+        key: int(overrides.get(key, 1))
+        for key in VOICE_AGENT_ENGINE_REPLICA_KEYS
+    }
+
+
+def _third_party_credentials(config: dict[str, Any]) -> dict[str, str]:
+    refs = get_path(config, "third_party_credentials", default={}) or {}
+    out: dict[str, str] = {}
+    for provider, secret_ref in refs.items():
+        field = LLM_PROVIDER_SECRET_REF_FIELDS.get(provider)
+        if field and secret_ref:
+            out[field] = str(secret_ref)
+    return out
+
+
+def _aura2_block(config: dict[str, Any]) -> dict[str, Any] | None:
+    aura2 = get_path(config, "aura2", default=None)
+    if not isinstance(aura2, dict):
+        return None
+    if not aura2.get("enabled"):
+        return None
+
+    block: dict[str, Any] = {"enabled": True}
+    for language in ("english", "spanish", "polyglot"):
+        lang_cfg = aura2.get(language)
+        if not isinstance(lang_cfg, dict) or not lang_cfg.get("enabled"):
+            continue
+        block[language] = {
+            "enabled": True,
+            "maxBatchSize": int(lang_cfg.get("maxBatchSize", 8)),
+            "t2cUuid": str(lang_cfg.get("t2cUuid", "")),
+            "c2aUuid": str(lang_cfg.get("c2aUuid", "")),
+            "cudaVisibleDevices": str(lang_cfg.get("cudaVisibleDevices", "0,1")),
+        }
+    return block
 
 
 def _model_urls(config: dict[str, Any]) -> list[str]:
