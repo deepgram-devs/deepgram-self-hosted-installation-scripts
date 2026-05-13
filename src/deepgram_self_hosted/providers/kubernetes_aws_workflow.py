@@ -10,6 +10,9 @@ from rich.console import Console
 from deepgram_self_hosted.config import get_path, load_config, write_config
 from deepgram_self_hosted.providers import aws_cli
 
+CLUSTER_CONFIG_FILENAME = "cluster-config.yaml"
+HELM_VALUES_FILENAME = "helm-values.yaml"
+
 
 def plan_from_config(
     config_path: Path,
@@ -20,8 +23,8 @@ def plan_from_config(
     config = load_config(config_path)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cluster_config_path = output_dir / "cluster-config.yaml"
-    values_path = output_dir / "my-values.yaml"
+    cluster_config_path = output_dir / CLUSTER_CONFIG_FILENAME
+    values_path = output_dir / HELM_VALUES_FILENAME
 
     cluster_config_path.write_text(render_cluster_config(config))
     values_path.write_text(render_values(config, resolve_aws=resolve_aws))

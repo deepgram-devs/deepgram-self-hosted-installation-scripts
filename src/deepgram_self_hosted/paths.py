@@ -10,3 +10,8 @@ KUBERNETES_AWS_DIR = REPO_ROOT / "kubernetes" / "aws"
 KUBERNETES_AWS_ARTIFACTS_DIR = KUBERNETES_AWS_DIR / "artifacts"
 
 DOCKER_AWS_SCRIPT = DOCKER_AWS_DIR / "deepgram-aws-docker-setup.sh"
+
+
+def artifacts_dir_for(name: str) -> Path:
+    """Per-deployment subfolder under the EKS artifacts root."""
+    return KUBERNETES_AWS_ARTIFACTS_DIR / name

@@ -10,9 +10,11 @@ from deepgram_self_hosted import __version__
 from deepgram_self_hosted.config import (
     clone_eks_config,
     default_eks_config,
+    get_path,
     load_config,
     write_config,
 )
+from deepgram_self_hosted.paths import artifacts_dir_for
 from deepgram_self_hosted.providers import docker_aws, kubernetes_aws, kubernetes_aws_workflow
 
 console = Console()
@@ -107,9 +109,14 @@ def plan_kubernetes_aws(
         ),
     ],
     output_dir: Annotated[
-        Path,
-        typer.Option("--output-dir", "-o", help="Directory for rendered artifacts."),
-    ] = Path("kubernetes/aws/artifacts"),
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            "-o",
+            help="Directory for rendered artifacts. "
+            "Defaults to kubernetes/aws/artifacts/<cluster-name>/.",
+        ),
+    ] = None,
     resolve_aws: Annotated[
         bool,
         typer.Option(
@@ -119,6 +126,16 @@ def plan_kubernetes_aws(
     ] = False,
 ) -> None:
     """Render EKS cluster config and Helm values from Python without applying them."""
+    if output_dir is None:
+        cluster_name = str(
+            get_path(
+                load_config(config),
+                "cluster",
+                "name",
+                default="deepgram-self-hosted-cluster",
+            )
+        )
+        output_dir = artifacts_dir_for(cluster_name)
     try:
         cluster_config, values = kubernetes_aws_workflow.plan_from_config(
             config,

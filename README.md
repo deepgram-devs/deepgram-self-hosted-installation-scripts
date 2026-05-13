@@ -172,12 +172,14 @@ The local CLI dependencies are managed by `uv` from [pyproject.toml](pyproject.t
 
 ## Generated Files
 
-The Kubernetes wizard always writes artifacts to `kubernetes/aws/artifacts/` (relative to the repo root), regardless of the directory you ran the CLI from:
+The Kubernetes wizard writes each deployment's artifacts into its own subfolder under `kubernetes/aws/artifacts/<folder-name>/` (defaulting to the cluster name). Per folder:
 
 - `cluster-config.yaml` — Deepgram-style `eksctl` cluster config
 - `eksctl-expanded-cluster-config.yaml` — optional expanded `eksctl --dry-run` output
-- `my-values.yaml` — Helm values rendered after EFS provisioning
-- `session.yaml` — default save path when the wizard runs without `--config`
+- `helm-values.yaml` — Helm values rendered after EFS provisioning
+- `session.yaml` — wizard's saved config (used for `--config X` re-runs)
+
+When the wizard finishes, it prompts for the folder name; if the folder already exists, it asks for confirmation before overwriting.
 
 The Docker path writes its compose/TOML output into `$HOME/deepgram-self-hosted/` on the target host.
 
